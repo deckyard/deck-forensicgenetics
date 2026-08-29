@@ -543,25 +543,35 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
         # the alignment. Ask for a wider one.
         return Band{exact: false, top: "", bottom: ""};
     }
-    def prev as list of int init [];
-    for (def j in 0..($n + 2)) {
-        $prev[] = NEG;
+    # Two score rows are live at a time, held in one list and alternated by
+    # index: $p is the row just finished, $q the one being filled. Rotating
+    # them by assignment instead - prev/cur/spare - deep-copies a full-width
+    # row on every pass, which is O(n) work per row where the band needs only
+    # O(w), and quadratic across the whole alignment.
+    def rows as list of list of int init [];
+    for (def k in 0..2) {
+        def blank as list of int init [];
+        for (def j in 0..($n + 2)) {
+            $blank[] = NEG;
+        }
+        $rows[] = $blank;
     }
-    def cur as list of int init $prev;
+    def p as int init 0;
     def dirs as list of bytes init [];
     def los as list of int init [];
     def firstHi as int init math.min($n, $w);
     def firstRow as bytes;
     $firstRow[] = DIR_DIAG;
-    $prev[0] = 0;
+    $rows[$p][0] = 0;
     for (def j in 1..($firstHi + 1)) {
-        $prev[$j] = $j * GAP;
+        $rows[$p][$j] = $j * GAP;
         $firstRow[] = DIR_LEFT;
     }
-    $prev[$firstHi + 1] = NEG;
+    $rows[$p][$firstHi + 1] = NEG;
     $dirs[] = $firstRow;
     $los[] = 0;
     for (def i in 1..($m + 1)) {
+        def q as int init 1 - $p;
         def lo as int init math.max(0, $i - $w);
         def hi as int init math.min($n, $i + $w);
         def base as int init $rb[$i - 1];
@@ -570,15 +580,15 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
         if ($lo > 0) {
             # Guard the cell just left of the band: the next row reads it as its
             # diagonal, and it must not see a value two rows stale.
-            $cur[$lo - 1] = NEG;
+            $rows[$q][$lo - 1] = NEG;
         } else {
-            $cur[0] = $i * GAP;
+            $rows[$q][0] = $i * GAP;
             $moves[] = DIR_UP;
             $left = $i * GAP;
         }
         for (def j in math.max(1, $lo)..($hi + 1)) {
-            def up as int init $prev[$j];
-            def diag as int init $prev[$j - 1];
+            def up as int init $rows[$p][$j];
+            def diag as int init $rows[$p][$j - 1];
             def best as int init $diag + MISMATCH;
             if ($base == $sb[$j - 1]) {
                 $best = $diag + MATCH;
@@ -596,15 +606,13 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
                 $move = DIR_LEFT;
             }
             $moves[] = $move;
-            $cur[$j] = $best;
+            $rows[$q][$j] = $best;
             $left = $best;
         }
-        $cur[$hi + 1] = NEG;
+        $rows[$q][$hi + 1] = NEG;
         $dirs[] = $moves;
         $los[] = $lo;
-        def spare as list of int init $prev;
-        $prev = $cur;
-        $cur = $spare;
+        $p = $q;
     }
     return traceback($dirs, $los, $r, $s, $w);
 }

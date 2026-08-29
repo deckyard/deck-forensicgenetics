@@ -146,13 +146,14 @@ of magnitude. Substitute published rates with
 `align` computes only a band around the diagonal, so for near-identical
 sequences - a haplotype against its own reference, which is the case it exists
 for - the cost is roughly linear in the region length rather than quadratic.
-Measured: 342 bp in 0.34 s, the ~1.1 kb control region in 1.5 s, 1600 bp in
-2.7 s, all inside 50 MB.
+Measured: 342 bp in 0.08 s, the ~1.1 kb control region in 0.29 s, 1600 bp in
+0.39 s, all inside 50 MB. Time tracks length closely - 14.6x the region length
+for 15.7x the time, out to the 5000-base cap - which is the band doing its job.
 
 Two sequences that genuinely diverge force the band wider, up to the full
 matrix, and then the cost is the quadratic one. `align` refuses a region longer
 than `lineage.MAX_ALIGN_LENGTH` (5000 bases) rather than appearing to hang; at
-that cap a near-identical pair takes about 15 s.
+that cap a near-identical pair takes about 1.2 s.
 
 Everything else in the deck is fast. An eight-locus, four-typed-person pedigree
 LR runs in about a tenth of a second, and peeling memory is flat regardless of
@@ -166,6 +167,49 @@ locus: 4 alleles 11 ms, 8 alleles 90 ms, 12 alleles 0.6 s, 16 alleles 1.9 s,
 20 alleles 5.4 s. A large reference family at a highly polymorphic locus can
 therefore take seconds per locus. Allele lumping already caps this at what is
 actually observed; beyond that, the panel is the thing to trim.
+
+### Building a database or profile one entry at a time is quadratic
+
+The copy-returning builders take a copy of the whole container before writing
+into it, so calling one in a loop re-copies everything accumulated so far:
+`withLocus` over `n` loci costs `1 + 2 + ... + n` entry copies. Measured, with
+the allele count held fixed at 10 so only the locus count varies: 25 loci in
+5.9 ms, 100 in 78 ms, 400 in 1077 ms - each doubling costs about four times as
+much.
+
+At the size a real STR panel has this does not matter. Fifteen to forty-five
+loci is tens of milliseconds, and converting a full 44-marker reference table
+lands around 16-21 ms.
+
+`profile(id, genotypes)` takes the whole list and accumulates once, so build a
+profile that way rather than folding `withGenotype` over a list. There is no
+bulk counterpart for `FrequencyDb` yet: `withLocus` is the only public way to
+add a locus, and constructing `FrequencyDb` and `LocusFrequencies` directly to
+avoid it would skip the validation that catches a percentage-scaled table
+before it produces genotype probabilities above 1. That is not a trade worth
+making at this scale.
+
+`combineFrequencies` used to pay this internally and no longer does.
+
+### Iterating a list of large values copies each element
+
+`for (def d in $dbs)` binds a fresh copy of each element on every pass, and
+copying a `FrequencyDb` copies its whole locus map. Inside a loop over loci
+that is quadratic, which is what `combineFrequencies` was doing; indexing the
+list positionally reads the element in place and is linear. The same applies to
+any list whose elements carry a map or a long list - it is the container copy,
+not the loop, that costs.
+
+Rotating two working buffers by assignment - `spare = prev; prev = cur;
+cur = spare` - copies for the same reason, once per rotation. Holding both in a
+two-element list and alternating an index avoids it entirely; that is what
+`align` does with its two score rows, and what keeps a banded alignment linear
+in the region length instead of quadratic.
+
+The same trap catches `lists.push` and `lists.pop`, which return a fresh list
+rather than mutating: `$xs[] = item` appends in place, and a stack or queue is
+better walked with an index than rebuilt on every pass. The two pedigree graph
+walks do it that way.
 
 ### Building a large pedigree is quadratic
 

@@ -264,11 +264,11 @@ export func db(name as string) {
  * @throws {Error} kind "forensicgenetics" on an empty locus name, a negative `n`, or a
  *   frequency outside (0, 1]
  */
-export func withLocus(
-    fdb as FrequencyDb,
-    locus as string,
-    n as int,
-    freqs as map of string to float) {
+# checkLocus validates one locus table, throwing on anything that would make it
+# not a probability distribution. Factored out of withLocus so a function that
+# already owns its FrequencyDb can validate an entry and write it directly,
+# rather than paying withLocus's whole-database copy per locus.
+func checkLocus(locus as string, n as int, freqs as map of string to float) {
     if (len($locus) == 0) {
         fail("locus name must not be empty");
     }
@@ -289,6 +289,14 @@ export func withLocus(
         fail("locus '" + $locus + "': allele frequencies sum to {$total}, which is not a" +
             " probability distribution - the table was very likely misread");
     }
+}
+
+export func withLocus(
+    fdb as FrequencyDb,
+    locus as string,
+    n as int,
+    freqs as map of string to float) {
+    checkLocus($locus, $n, $freqs);
     def out as FrequencyDb init $fdb;
     $out.loci[$locus] = LocusFrequencies{locus: $locus, n: $n, alleles: $freqs};
     return $out;
@@ -340,11 +348,17 @@ export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
     if (len($dbs) == 0) {
         fail("combineFrequencies needs at least one database");
     }
+    # $dbs is walked positionally throughout. `for (def d in $dbs)` binds a
+    # fresh copy of the FrequencyDb on every pass, and copying a database
+    # copies its whole locus map - so doing that once per locus, as the inner
+    # loop below would, is quadratic in the number of loci. Indexing reads the
+    # element in place instead.
     def shared as list of string init loci($dbs[0]);
-    for (def d in $dbs) {
+    for (def i in 0..len($dbs)) {
+        def table as map of string to LocusFrequencies init $dbs[$i].loci;
         def keep as list of string init [];
         for (def locus in $shared) {
-            if (maps.has($d.loci, $locus)) {
+            if (maps.has($table, $locus)) {
                 $keep[] = $locus;
             }
         }
@@ -358,8 +372,8 @@ export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
         def counts as map of string to float init {};
         def alleles as float init 0.0;
         def pooledN as int init 0;
-        for (def d in $dbs) {
-            def lf as LocusFrequencies init $d.loci[$locus];
+        for (def i in 0..len($dbs)) {
+            def lf as LocusFrequencies init $dbs[$i].loci[$locus];
             $pooledN = $pooledN + $lf.n;
             $alleles = $alleles + 2.0 * convert.toFloat($lf.n);
             $counts = addObservedCounts($counts, $lf);
@@ -372,7 +386,11 @@ export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
         for (def a in $counts) {
             $pooled[$a] = $counts[$a] / $alleles;
         }
-        $out = withLocus($out, $locus, $pooledN, $pooled);
+        # $out is this function's own value, so writing into it directly costs
+        # nothing; routing each locus through withLocus would copy every locus
+        # pooled so far, which is the other half of the same quadratic.
+        checkLocus($locus, $pooledN, $pooled);
+        $out.loci[$locus] = LocusFrequencies{locus: $locus, n: $pooledN, alleles: $pooled};
     }
     return $out;
 }
@@ -428,11 +446,18 @@ func lookup(fdb as FrequencyDb, locus as string) {
  * @throws {Error} kind "forensicgenetics" if the database has no such locus
  */
 export func minFrequency(fdb as FrequencyDb, locus as string) {
-    def lf as LocusFrequencies init lookup($fdb, $locus);
-    if ($lf.n <= 0) {
+    return alleleFloor(lookup($fdb, $locus).n);
+}
+
+# alleleFloor is minFrequency once the locus is already in hand. It takes the
+# sample size rather than the LocusFrequencies so that a caller holding one
+# does not look the locus up a second time - lookup returns by value, so every
+# call deep-copies the locus's whole allele map.
+func alleleFloor(n as int) {
+    if ($n <= 0) {
         return 0.0;
     }
-    return MIN_ALLELE_COUNT / (2.0 * convert.toFloat($lf.n));
+    return MIN_ALLELE_COUNT / (2.0 * convert.toFloat($n));
 }
 
 /**
@@ -452,7 +477,7 @@ export func alleleFrequency(fdb as FrequencyDb, locus as string, allele as strin
     if (maps.has($lf.alleles, $allele)) {
         $p = $lf.alleles[$allele];
     }
-    def floor as float init minFrequency($fdb, $locus);
+    def floor as float init alleleFloor($lf.n);
     if ($p < $floor) {
         $p = $floor;
     }

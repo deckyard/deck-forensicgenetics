@@ -298,30 +298,39 @@ func checkNoAncestorCycle(ped as Pedigree) {
 # current path and 2 once its ancestors are all accounted for.
 func settleAncestors(ped as Pedigree, state as map of string to int, start as string) {
     def out as map of string to int init $state;
+    # The stack is a list plus a live-entry count. Pushing reuses a slot an
+    # earlier pop left behind before it grows the list, and popping only moves
+    # the count - where lists.pop would return a fresh copy of the whole stack
+    # on every pass. A member stays on the stack while its parents are walked,
+    # which is what closes it on the way back down.
     def stack as list of string init [$start];
-    while (len($stack) > 0) {
-        def cur as string init lists.last($stack);
+    def top as int init 1;
+    while ($top > 0) {
+        def cur as string init $stack[$top - 1];
         if (maps.has($out, $cur)) {
             if ($out[$cur] == 1) {
                 $out[$cur] = 2;
             }
-            $stack = lists.pop($stack);
-        } else {
-            $out[$cur] = 1;
-            $stack = pushUnsettled($ped, $out, $stack, $cur);
+            $top = $top - 1;
+            continue;
+        }
+        $out[$cur] = 1;
+        for (def p in unsettledParents($ped, $out, $cur)) {
+            if ($top < len($stack)) {
+                $stack[$top] = $p;
+            } else {
+                $stack[] = $p;
+            }
+            $top = $top + 1;
         }
     }
     return $out;
 }
 
-# pushUnsettled queues the parents that still need walking, and raises if one is
-# already open - that is the member appearing among its own ancestors.
-func pushUnsettled(
-    ped as Pedigree,
-    state as map of string to int,
-    stack as list of string,
-    id as string) {
-    def out as list of string init $stack;
+# unsettledParents lists the parents that still need walking, and raises if one
+# is already open - that is the member appearing among its own ancestors.
+func unsettledParents(ped as Pedigree, state as map of string to int, id as string) {
+    def out as list of string init [];
     for (def p in parentIds($ped, $id)) {
         if (maps.has($state, $p)) {
             if ($state[$p] == 1) {
@@ -872,27 +881,34 @@ func componentRoots(ped as Pedigree, frame as Frame) {
 # families to `seen`.
 func markComponent(frame as Frame, seen as map of string to bool, start as string) {
     def out as map of string to bool init $seen;
-    def stack as list of string init [$start];
-    while (len($stack) > 0) {
-        def cur as string init lists.last($stack);
-        $stack = lists.pop($stack);
+    # The frontier is consumed by advancing an index rather than by lists.pop,
+    # which copies the whole list on every pass. Reachability does not care
+    # about the order, so a queue marks the same members a stack would.
+    def queue as list of string init [$start];
+    def head as int init 0;
+    while ($head < len($queue)) {
+        def cur as string init $queue[$head];
+        $head = $head + 1;
         if (not maps.has($out, $cur)) {
             $out[$cur] = true;
-            for (def fam in $frame.incidence[$cur]) {
-                $stack = pushFamily($frame, $stack, $fam);
+            for (def id in familyMembers($frame, $cur)) {
+                $queue[] = $id;
             }
         }
     }
     return $out;
 }
 
-# pushFamily queues every member of one nuclear family for the component walk.
-func pushFamily(frame as Frame, stack as list of string, fam as int) {
-    def out as list of string init $stack;
-    $out[] = $frame.famFather[$fam];
-    $out[] = $frame.famMother[$fam];
-    for (def c in $frame.famChildren[$fam]) {
-        $out[] = $c;
+# familyMembers lists everyone sharing a nuclear family with `id` - the
+# neighbours a component walk visits next.
+func familyMembers(frame as Frame, id as string) {
+    def out as list of string init [];
+    for (def fam in $frame.incidence[$id]) {
+        $out[] = $frame.famFather[$fam];
+        $out[] = $frame.famMother[$fam];
+        for (def c in $frame.famChildren[$fam]) {
+            $out[] = $c;
+        }
     }
     return $out;
 }
