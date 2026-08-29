@@ -1,6 +1,8 @@
 # @jennifer/forensicgenetics
 
-[![CI](https://github.com/jennifer-language/deck-forensicgenetics/actions/workflows/ci.yml/badge.svg)](https://github.com/jennifer-language/deck-forensicgenetics/actions/workflows/ci.yml)
+[![test](https://github.com/jennifer-language/deck-forensicgenetics/actions/workflows/test.yml/badge.svg)](https://github.com/jennifer-language/deck-forensicgenetics/actions/workflows/test.yml)
+[![Documentation](https://img.shields.io/badge/docs-github%20pages-blue)](https://jennifer-language.github.io/deck-forensicgenetics/)
+[![release](https://img.shields.io/github/v/release/jennifer-language/deck-forensicgenetics)](https://github.com/jennifer-language/deck-forensicgenetics/releases/latest)
 
 Forensic and statistical genetics for [Jennifer](https://jennifer-lang.dev/) -
 the statistical-genetics sibling of the sequence deck. It works on **profiles**
