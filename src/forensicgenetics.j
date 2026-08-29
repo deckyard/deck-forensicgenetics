@@ -1,0 +1,975 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# pragma-jennifer-version: >=0.25.0
+
+/**
+ * Forensic and statistical genetics over autosomal STR profiles.
+ *
+ * The entry module of the `forensicgenetics` deck. It works on **profiles** - an
+ * unordered allele pair per autosomal STR locus - and on reference **allele
+ * frequency** data, and combines them into the match statistics a report
+ * quotes: single-locus Hardy-Weinberg genotype frequencies with the NRC II
+ * theta (sub-population) correction, the random match probability across a
+ * panel, the single-source likelihood ratio, and the combined probability of
+ * inclusion / exclusion for a mixture.
+ *
+ * Alleles are **strings**, not numbers, because STR allele designations are
+ * not integers: `"9.3"` at TH01 and `"15.2"` at D19S433 are ordinary alleles
+ * and `"15"` and `"15.0"` must not silently become the same key. Use
+ * `alleleValue` when repeat-count arithmetic is actually wanted (the mutation
+ * model in `kinship.j` does).
+ *
+ * Rare and unobserved alleles take the NRC II **5/2N floor**: an allele is
+ * never scored rarer than 5/(2N) for the locus's own N, which is why a
+ * `FrequencyDb` keeps a per-locus sample size rather than frequencies alone.
+ *
+ * The module is **vendor-independent**: it defines the generic `FrequencyDb`
+ * and nothing else. It reads no published format and knows no data source.
+ * Build a database with `db` + `withLocus`, or let a reader convert a
+ * published table into one - the `@mplx/strider` deck does that for
+ * STRidER exports. Which dataset you load (a country, a continent, the full
+ * database) is a casework decision the caller owns, and when the donor's
+ * population is uncertain `randomMatchProbabilityAcross` is the estimator for
+ * it - not a table pooled with `combineFrequencies`, which biases the answer.
+ *
+ * Sibling modules: `kinship.j` (relationship LRs, paternity),
+ * `pedigree.j` (general-pedigree likelihoods), `lineage.j` (mtDNA / Y-STR).
+ * @module forensicgenetics
+ * @see https://strider.online/formulae - the STRidER formulae page these
+ *   estimators follow
+ * @see https://github.com/mplx/deck-strider-frequency-converter - the reader
+ *   deck that converts a STRidER export into a `FrequencyDb`
+ * @example
+ * import "@jennifer/forensicgenetics/" as forensics;
+ *
+ * def db as forensics.FrequencyDb init forensics.withLocus(
+ *     forensics.db("example"), "D3S1358", 1034, {"15": 0.4, "16": 0.6});
+ * def suspect as forensics.Profile init forensics.profile("S1", [
+ *     forensics.genotype("D3S1358", "15", "16"),
+ *     forensics.genotype("TH01", "9.3", "9.3")
+ * ]);
+ * def t as float init forensics.THETA_GENERAL;
+ * def rmp as float init forensics.randomMatchProbability($db, $suspect, $t);
+ * def lr as float init forensics.matchLikelihoodRatio($db, $suspect, $t);
+ */
+use math;
+use maps;
+use lists;
+use strings;
+use convert;
+
+/**
+ * The NRC II theta for a broad, well-mixed population.
+ *
+ * Theta (also written Fst) is the co-ancestry coefficient: the probability
+ * that two alleles drawn from the same sub-population are identical by descent
+ * rather than by chance. Larger theta means a more conservative (larger) match
+ * probability.
+ */
+export def const THETA_GENERAL as float init 0.01;
+
+/**
+ * The NRC II theta recommended for small, isolated or endogamous populations.
+ */
+export def const THETA_ISOLATED as float init 0.03;
+
+/**
+ * Theta zero - the plain product rule with no sub-population correction.
+ *
+ * Correct only for an idealised panmictic population; quote it for
+ * illustration, not for casework.
+ */
+export def const THETA_NONE as float init 0.0;
+
+/**
+ * The numerator of the NRC II minimum-allele-frequency floor, 5/(2N).
+ */
+export def const MIN_ALLELE_COUNT as float init 5.0;
+
+/**
+ * The largest allele-frequency sum a locus may have and still be accepted.
+ *
+ * Published tables round, so a locus rarely sums to exactly 1; this
+ * accommodates rounding variation while still rejecting a table that was
+ * plainly misread.
+ */
+export def const MAX_FREQUENCY_SUM as float init 1.05;
+
+/**
+ * One locus of a reference frequency table.
+ * @field locus {string} the locus name, e.g. "D3S1358"
+ * @field n {int} the number of individuals typed at this locus (so 2N alleles)
+ * @field alleles {map of string to float} allele label -> observed frequency
+ */
+export def struct LocusFrequencies {
+    locus as string,
+    n as int,
+    alleles as map of string to float
+};
+
+/**
+ * A reference allele-frequency database, one entry per locus.
+ * @field name {string} the population / dataset label
+ * @field loci {map of string to LocusFrequencies} locus name -> its frequencies
+ */
+export def struct FrequencyDb {
+    name as string,
+    loci as map of string to LocusFrequencies
+};
+
+/**
+ * An unordered pair of alleles at one autosomal locus.
+ *
+ * Build one with `genotype`, which orders the pair canonically so that two
+ * genotypes written in either order compare equal.
+ * @field locus {string} the locus name
+ * @field a {string} the first allele of the ordered pair
+ * @field b {string} the second allele; `a == b` is a homozygote
+ */
+export def struct Genotype {
+    locus as string,
+    a as string,
+    b as string
+};
+
+/**
+ * A single-source STR profile: one genotype per locus.
+ * @field id {string} a caller-chosen label for the profile
+ * @field loci {map of string to Genotype} locus name -> the genotype seen there
+ */
+export def struct Profile {
+    id as string,
+    loci as map of string to Genotype
+};
+
+/**
+ * A mixed stain: the set of alleles seen at each locus, with no assumption
+ * about how many contributors produced them or how they pair up.
+ * @field id {string} a caller-chosen label
+ * @field loci {map of string to list of string} locus name -> the alleles observed
+ */
+export def struct Mixture {
+    id as string,
+    loci as map of string to list of string
+};
+
+# --- errors -----------------------------------------------------------------
+
+func fail(msg as string) {
+    throw Error{kind: "forensicgenetics", message: $msg, file: "", line: 0, col: 0};
+}
+
+# --- allele helpers ---------------------------------------------------------
+
+/**
+ * The numeric repeat count an allele label denotes.
+ *
+ * `"15"` -> 15.0 and `"9.3"` -> 9.3 (nine full repeats plus a three-base
+ * microvariant). Non-numeric designations - `"X"`, `"Y"`, `"OL"` - have no
+ * repeat count and are an error; test first with `isNumericAllele`.
+ * @param allele {string} the allele label
+ * @return {float} the repeat count
+ * @throws {Error} kind "forensicgenetics" if the label is not numeric
+ */
+export func alleleValue(allele as string) {
+    if (not isNumericAllele($allele)) {
+        fail("allele '" + $allele + "' has no numeric repeat count");
+    }
+    return convert.toFloat($allele);
+}
+
+/**
+ * Whether an allele label is a plain repeat count (and so has a value).
+ * @param allele {string} the allele label
+ * @return {bool} true if `alleleValue` would succeed
+ */
+export func isNumericAllele(allele as string) {
+    if (len($allele) == 0) {
+        return false;
+    }
+    def dots as int init 0;
+    def digits as int init 0;
+    for (def ch in strings.chars($allele)) {
+        if ($ch == ".") {
+            $dots = $dots + 1;
+        } elseif (strings.indexOf("0123456789", $ch) >= 0) {
+            $digits = $digits + 1;
+        } else {
+            return false;
+        }
+    }
+    return $digits > 0 and $dots <= 1;
+}
+
+# compareAlleles orders two allele labels: numerically when both carry a repeat
+# count, lexicographically otherwise, so a panel mixing "15" with "X" still has
+# a total order. Returns -1, 0 or 1.
+func compareAlleles(x as string, y as string) {
+    if (isNumericAllele($x) and isNumericAllele($y)) {
+        def vx as float init convert.toFloat($x);
+        def vy as float init convert.toFloat($y);
+        if ($vx < $vy) {
+            return -1;
+        }
+        if ($vx > $vy) {
+            return 1;
+        }
+        return 0;
+    }
+    if ($x < $y) {
+        return -1;
+    }
+    if ($x > $y) {
+        return 1;
+    }
+    return 0;
+}
+
+# distinct returns the input with repeats removed, order preserved. Membership
+# is a hash lookup rather than a scan of what has been kept so far, so a locus
+# listing many alleles stays linear.
+func distinct(xs as list of string) {
+    def seen as map of string to bool init {};
+    def out as list of string init [];
+    for (def x in $xs) {
+        if (not maps.has($seen, $x)) {
+            $seen[$x] = true;
+            $out[] = $x;
+        }
+    }
+    return $out;
+}
+
+# --- frequency database -----------------------------------------------------
+
+/**
+ * An empty frequency database.
+ * @param name {string} the population / dataset label
+ * @return {FrequencyDb} a database with no loci
+ */
+export func db(name as string) {
+    return FrequencyDb{name: $name, loci: {}};
+}
+
+/**
+ * A copy of `fdb` with one locus added or replaced.
+ *
+ * Frequencies are stored as published; the 5/2N floor is applied on read by
+ * `alleleFrequency`, so the table keeps its original numbers.
+ * @param fdb {FrequencyDb} the database to extend
+ * @param locus {string} the locus name
+ * @param n {int} the number of individuals typed at this locus
+ * @param freqs {map of string to float} allele label -> observed frequency
+ * @return {FrequencyDb} the extended copy
+ * @throws {Error} kind "forensicgenetics" on an empty locus name, a negative `n`, or a
+ *   frequency outside (0, 1]
+ */
+export func withLocus(
+    fdb as FrequencyDb,
+    locus as string,
+    n as int,
+    freqs as map of string to float) {
+    if (len($locus) == 0) {
+        fail("locus name must not be empty");
+    }
+    if ($n < 0) {
+        fail("locus '" + $locus + "': sample size must not be negative");
+    }
+    def total as float init 0.0;
+    for (def a in $freqs) {
+        if ($freqs[$a] <= 0.0 or $freqs[$a] > 1.0) {
+            fail("locus '" + $locus + "' allele '" + $a + "': frequency must be in (0, 1]");
+        }
+        $total = $total + $freqs[$a];
+    }
+    # A locus may legitimately list only part of its alleles, so a sum below 1
+    # is fine. A sum meaningfully above 1 is not a rounding artefact - it is a
+    # misread table, and left alone it yields genotype "probabilities" above 1.
+    if ($total > MAX_FREQUENCY_SUM) {
+        fail("locus '" + $locus + "': allele frequencies sum to {$total}, which is not a" +
+            " probability distribution - the table was very likely misread");
+    }
+    def out as FrequencyDb init $fdb;
+    $out.loci[$locus] = LocusFrequencies{locus: $locus, n: $n, alleles: $freqs};
+    return $out;
+}
+
+# addObservedCounts accumulates one locus table's observed allele counts
+# (frequency * 2N) into a running total, so pooling several tables is a sum of
+# counts rather than an average of frequencies.
+func addObservedCounts(counts as map of string to float, lf as LocusFrequencies) {
+    def twoN as float init 2.0 * convert.toFloat($lf.n);
+    def out as map of string to float init $counts;
+    for (def a in $lf.alleles) {
+        def seen as float init $lf.alleles[$a] * $twoN;
+        if (maps.has($out, $a)) {
+            $out[$a] = $out[$a] + $seen;
+        } else {
+            $out[$a] = $seen;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Pool several frequency tables into one, weighted by their sample sizes.
+ *
+ * The pooled frequency of an allele is the total number of times it was
+ * observed across the inputs divided by the total number of alleles typed:
+ * `sum(p_i * 2N_i) / sum(2N_i)`. The pooled `N` is the sum of the inputs'.
+ *
+ * Only loci that **every** input carries are pooled - pooling a locus from a
+ * subset would silently make different loci describe different population
+ * mixes. Check `loci` on the result to see what survived.
+ *
+ * **This is not the way to ask "what if the donor was German or Austrian".**
+ * A pooled table is a description of one merged population, and merging
+ * populations whose frequencies differ leaves the pool short of heterozygotes
+ * relative to Hardy-Weinberg - the Wahlund effect. Because
+ * `randomMatchProbability` assumes Hardy-Weinberg, a pooled table biases it
+ * *downwards*, which overstates the evidence. Use
+ * `randomMatchProbabilityAcross` for an uncertain population, and reserve this
+ * for the case where the merged group genuinely is the reference population.
+ * @param dbs {list of FrequencyDb} the tables to pool; at least one
+ * @param name {string} the dataset label for the pooled table
+ * @return {FrequencyDb} the pooled table, over the shared loci
+ * @throws {Error} kind "forensicgenetics" on an empty list, when the inputs
+ *   share no locus, or when a shared locus has no sample size anywhere
+ */
+export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
+    if (len($dbs) == 0) {
+        fail("combineFrequencies needs at least one database");
+    }
+    def shared as list of string init loci($dbs[0]);
+    for (def d in $dbs) {
+        def keep as list of string init [];
+        for (def locus in $shared) {
+            if (maps.has($d.loci, $locus)) {
+                $keep[] = $locus;
+            }
+        }
+        $shared = $keep;
+    }
+    if (len($shared) == 0) {
+        fail("the databases share no locus, so there is nothing to pool");
+    }
+    def out as FrequencyDb init db($name);
+    for (def locus in $shared) {
+        def counts as map of string to float init {};
+        def alleles as float init 0.0;
+        def pooledN as int init 0;
+        for (def d in $dbs) {
+            def lf as LocusFrequencies init $d.loci[$locus];
+            $pooledN = $pooledN + $lf.n;
+            $alleles = $alleles + 2.0 * convert.toFloat($lf.n);
+            $counts = addObservedCounts($counts, $lf);
+        }
+        if ($alleles <= 0.0) {
+            fail("locus '" + $locus + "': no input states a sample size, so it" +
+                " cannot be weighted");
+        }
+        def pooled as map of string to float init {};
+        for (def a in $counts) {
+            $pooled[$a] = $counts[$a] / $alleles;
+        }
+        $out = withLocus($out, $locus, $pooledN, $pooled);
+    }
+    return $out;
+}
+
+/**
+ * The loci a database covers, in insertion order.
+ * @param fdb {FrequencyDb} the database
+ * @return {list of string} the locus names
+ */
+export func loci(fdb as FrequencyDb) {
+    return maps.keys($fdb.loci);
+}
+
+/**
+ * Whether a database covers a locus.
+ * @param fdb {FrequencyDb} the database
+ * @param locus {string} the locus name
+ * @return {bool} true if the locus is present
+ */
+export func hasLocus(fdb as FrequencyDb, locus as string) {
+    return maps.has($fdb.loci, $locus);
+}
+
+/**
+ * The number of individuals typed at a locus.
+ * @param fdb {FrequencyDb} the database
+ * @param locus {string} the locus name
+ * @return {int} the sample size N
+ * @throws {Error} kind "forensicgenetics" if the database has no such locus
+ */
+export func sampleSize(fdb as FrequencyDb, locus as string) {
+    return lookup($fdb, $locus).n;
+}
+
+# lookup fetches a locus with a message that names the missing locus, which is
+# far more useful than the runtime's generic missing-key error.
+func lookup(fdb as FrequencyDb, locus as string) {
+    if (not maps.has($fdb.loci, $locus)) {
+        fail("frequency database '" + $fdb.name + "' has no locus '" + $locus + "'");
+    }
+    return $fdb.loci[$locus];
+}
+
+/**
+ * The NRC II minimum allele frequency for a locus: 5/(2N).
+ *
+ * No allele is scored rarer than this, which keeps a single unobserved allele
+ * from driving a match probability to zero. A locus whose sample size is
+ * unknown (`n == 0`) has no floor.
+ * @param fdb {FrequencyDb} the database
+ * @param locus {string} the locus name
+ * @return {float} the floor, or 0.0 when N is unknown
+ * @throws {Error} kind "forensicgenetics" if the database has no such locus
+ */
+export func minFrequency(fdb as FrequencyDb, locus as string) {
+    def lf as LocusFrequencies init lookup($fdb, $locus);
+    if ($lf.n <= 0) {
+        return 0.0;
+    }
+    return MIN_ALLELE_COUNT / (2.0 * convert.toFloat($lf.n));
+}
+
+/**
+ * The frequency of one allele, floored at 5/(2N).
+ *
+ * An allele the reference table never observed is scored at the floor rather
+ * than at zero. The returned value is capped at 1.0.
+ * @param fdb {FrequencyDb} the database
+ * @param locus {string} the locus name
+ * @param allele {string} the allele label
+ * @return {float} the floored frequency, in (0, 1]
+ * @throws {Error} kind "forensicgenetics" if the database has no such locus
+ */
+export func alleleFrequency(fdb as FrequencyDb, locus as string, allele as string) {
+    def lf as LocusFrequencies init lookup($fdb, $locus);
+    def p as float init 0.0;
+    if (maps.has($lf.alleles, $allele)) {
+        $p = $lf.alleles[$allele];
+    }
+    def floor as float init minFrequency($fdb, $locus);
+    if ($p < $floor) {
+        $p = $floor;
+    }
+    if ($p > 1.0) {
+        $p = 1.0;
+    }
+    if ($p <= 0.0) {
+        fail("locus '" + $locus + "' allele '" + $allele +
+            "': no frequency and no 5/2N floor (the table is missing its sample size)");
+    }
+    return $p;
+}
+
+# --- genotypes and profiles -------------------------------------------------
+
+/**
+ * A genotype at one locus, with its allele pair put in canonical order.
+ *
+ * The pair is unordered biologically, so `genotype("TH01", "9.3", "6")` and
+ * `genotype("TH01", "6", "9.3")` produce the same value and compare equal.
+ * @param locus {string} the locus name
+ * @param a {string} one allele label
+ * @param b {string} the other allele label
+ * @return {Genotype} the canonical genotype
+ * @throws {Error} kind "forensicgenetics" on an empty locus name or allele label
+ */
+export func genotype(locus as string, a as string, b as string) {
+    if (len($locus) == 0) {
+        fail("locus name must not be empty");
+    }
+    if (len($a) == 0 or len($b) == 0) {
+        fail("locus '" + $locus + "': allele labels must not be empty");
+    }
+    if (compareAlleles($a, $b) > 0) {
+        return Genotype{locus: $locus, a: $b, b: $a};
+    }
+    return Genotype{locus: $locus, a: $a, b: $b};
+}
+
+/**
+ * Whether a genotype carries the same allele twice.
+ * @param g {Genotype} the genotype
+ * @return {bool} true for a homozygote
+ */
+export func isHomozygous(g as Genotype) {
+    return $g.a == $g.b;
+}
+
+/**
+ * The distinct alleles of a genotype: one label for a homozygote, two for a
+ * heterozygote.
+ * @param g {Genotype} the genotype
+ * @return {list of string} the distinct allele labels
+ */
+export func alleles(g as Genotype) {
+    if (isHomozygous($g)) {
+        return [$g.a];
+    }
+    return [$g.a, $g.b];
+}
+
+/**
+ * A profile built from a list of genotypes.
+ * @param id {string} a label for the profile
+ * @param genotypes {list of Genotype} the genotypes, one per locus
+ * @return {Profile} the profile
+ * @throws {Error} kind "forensicgenetics" if a locus appears twice
+ */
+export func profile(id as string, genotypes as list of Genotype) {
+    def out as Profile init Profile{id: $id, loci: {}};
+    for (def g in $genotypes) {
+        if (maps.has($out.loci, $g.locus)) {
+            fail("profile '" + $id + "' lists locus '" + $g.locus + "' twice");
+        }
+        $out.loci[$g.locus] = $g;
+    }
+    return $out;
+}
+
+/**
+ * A copy of `p` with one genotype added, replacing any genotype already
+ * recorded at that locus.
+ * @param p {Profile} the profile
+ * @param g {Genotype} the genotype to set
+ * @return {Profile} the updated copy
+ */
+export func withGenotype(p as Profile, g as Genotype) {
+    def out as Profile init $p;
+    $out.loci[$g.locus] = $g;
+    return $out;
+}
+
+/**
+ * The loci a profile carries, in insertion order.
+ * @param p {Profile} the profile
+ * @return {list of string} the locus names
+ */
+export func profileLoci(p as Profile) {
+    return maps.keys($p.loci);
+}
+
+/**
+ * Whether a profile has a genotype at a locus.
+ * @param p {Profile} the profile
+ * @param locus {string} the locus name
+ * @return {bool} true if typed there
+ */
+export func hasGenotype(p as Profile, locus as string) {
+    return maps.has($p.loci, $locus);
+}
+
+/**
+ * The genotype a profile records at a locus.
+ * @param p {Profile} the profile
+ * @param locus {string} the locus name
+ * @return {Genotype} the genotype
+ * @throws {Error} kind "forensicgenetics" if the profile is not typed at that locus
+ */
+export func genotypeAt(p as Profile, locus as string) {
+    if (not maps.has($p.loci, $locus)) {
+        fail("profile '" + $p.id + "' has no genotype at locus '" + $locus + "'");
+    }
+    return $p.loci[$locus];
+}
+
+/**
+ * The loci a profile and a database have in common, in profile order.
+ *
+ * Use it to narrow a profile before scoring it against a table that does not
+ * cover the whole panel: `randomMatchProbability` deliberately refuses a locus
+ * it has no frequencies for rather than dropping it silently.
+ * @param fdb {FrequencyDb} the database
+ * @param p {Profile} the profile
+ * @return {list of string} the shared locus names
+ */
+export func commonLoci(fdb as FrequencyDb, p as Profile) {
+    def out as list of string init [];
+    for (def locus in $p.loci) {
+        if (maps.has($fdb.loci, $locus)) {
+            $out[] = $locus;
+        }
+    }
+    return $out;
+}
+
+/**
+ * A copy of `p` keeping only the named loci.
+ * @param p {Profile} the profile
+ * @param keep {list of string} the locus names to retain
+ * @return {Profile} the restricted profile
+ * @throws {Error} kind "forensicgenetics" if the profile is not typed at a named locus
+ */
+export func restrict(p as Profile, keep as list of string) {
+    def out as Profile init Profile{id: $p.id, loci: {}};
+    for (def locus in $keep) {
+        $out.loci[$locus] = genotypeAt($p, $locus);
+    }
+    return $out;
+}
+
+# --- match probabilities ----------------------------------------------------
+
+# checkTheta rejects a theta outside [0, 1). At theta = 1 the Balding-Nichols
+# denominator still divides, but every allele is identical by descent and the
+# formula is meaningless, so the interval is half-open.
+func checkTheta(theta as float) {
+    if ($theta < 0.0 or $theta >= 1.0) {
+        fail("theta must be in [0, 1)");
+    }
+}
+
+/**
+ * The single-locus genotype frequency, with the NRC II theta correction.
+ *
+ * This is NRC II recommendation 4.2 (the Balding-Nichols sampling formula),
+ * conditioned on one copy of the genotype already being observed - the
+ * "match probability" form, not the unconditional population frequency:
+ *
+ * ```
+ *   homozygote  aa: [2t + (1-t)pa] [3t + (1-t)pa] / [(1+t)(1+2t)]
+ *   heterozygote ab: 2 [t + (1-t)pa] [t + (1-t)pb] / [(1+t)(1+2t)]
+ * ```
+ *
+ * At `theta == 0` these collapse to the familiar Hardy-Weinberg `pa^2` and
+ * `2 pa pb`.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param g {Genotype} the genotype
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} the genotype frequency
+ * @throws {Error} kind "forensicgenetics" on an out-of-range theta or a locus the
+ *   database does not cover
+ */
+export func genotypeFrequency(fdb as FrequencyDb, g as Genotype, theta as float) {
+    checkTheta($theta);
+    def t as float init $theta;
+    def den as float init (1.0 + $t) * (1.0 + 2.0 * $t);
+    def pa as float init alleleFrequency($fdb, $g.locus, $g.a);
+    if (isHomozygous($g)) {
+        def x as float init 2.0 * $t + (1.0 - $t) * $pa;
+        def y as float init 3.0 * $t + (1.0 - $t) * $pa;
+        return atMostOne(($x * $y) / $den);
+    }
+    def pb as float init alleleFrequency($fdb, $g.locus, $g.b);
+    def u as float init $t + (1.0 - $t) * $pa;
+    def v as float init $t + (1.0 - $t) * $pb;
+    return atMostOne((2.0 * $u * $v) / $den);
+}
+
+# atMostOne caps a genotype frequency at 1. A small locus whose 5/2N floor
+# exceeds its own allele frequencies can push the product past 1, and a
+# probability above 1 must never leave this module.
+func atMostOne(p as float) {
+    if ($p > 1.0) {
+        return 1.0;
+    }
+    return $p;
+}
+
+/**
+ * The random match probability (RMP) of a single-source profile.
+ *
+ * The product of `genotypeFrequency` across every locus of the profile: the
+ * chance that an unrelated person drawn at random from the reference
+ * population would carry this profile.
+ *
+ * Every locus of the profile must be in the database - a silently dropped
+ * locus would inflate the RMP without warning. Narrow the profile with
+ * `commonLoci` + `restrict` if that is what you want.
+ *
+ * For a very large panel prefer `log10RandomMatchProbability`, which cannot
+ * underflow.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param p {Profile} the profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} the random match probability
+ * @throws {Error} kind "forensicgenetics" on an empty profile, an out-of-range theta,
+ *   or a locus the database does not cover
+ */
+export func randomMatchProbability(fdb as FrequencyDb, p as Profile, theta as float) {
+    if (len($p.loci) == 0) {
+        fail("profile '" + $p.id + "' has no genotypes");
+    }
+    def out as float init 1.0;
+    for (def locus in $p.loci) {
+        $out = $out * genotypeFrequency($fdb, $p.loci[$locus], $theta);
+    }
+    return $out;
+}
+
+/**
+ * The base-10 logarithm of the random match probability.
+ *
+ * Summing logarithms instead of multiplying probabilities, so a panel of
+ * hundreds of loci reports `-312.4` where the product would have underflowed
+ * to zero. This is also the form a report usually quotes ("1 in 10^18").
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param p {Profile} the profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} log10 of the random match probability (a negative number)
+ * @throws {Error} kind "forensicgenetics" on an empty profile, an out-of-range theta,
+ *   or a locus the database does not cover
+ */
+export func log10RandomMatchProbability(fdb as FrequencyDb, p as Profile, theta as float) {
+    if (len($p.loci) == 0) {
+        fail("profile '" + $p.id + "' has no genotypes");
+    }
+    def out as float init 0.0;
+    for (def locus in $p.loci) {
+        $out = $out + math.log10(genotypeFrequency($fdb, $p.loci[$locus], $theta));
+    }
+    return $out;
+}
+
+/**
+ * The single-source likelihood ratio, `1 / RMP`.
+ *
+ * The weight of evidence for "the stain came from this person" against "it
+ * came from an unrelated person from the reference population".
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param p {Profile} the profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} the likelihood ratio
+ * @throws {Error} kind "forensicgenetics" as for `randomMatchProbability`
+ */
+export func matchLikelihoodRatio(fdb as FrequencyDb, p as Profile, theta as float) {
+    def rmp as float init randomMatchProbability($fdb, $p, $theta);
+    if ($rmp <= 0.0) {
+        fail("profile '" + $p.id + "' has a zero random match probability");
+    }
+    return 1.0 / $rmp;
+}
+
+/**
+ * The random match probability when the donor's population is uncertain.
+ *
+ * This is the law of total probability over the candidate populations:
+ * `P(G) = sum(w_i * P(G | population i))`, each term the ordinary
+ * `randomMatchProbability` in its own table. It is the right answer to "the
+ * donor was German or Austrian" - and it is **not** the same number as
+ * computing one probability from a pooled table, which averages the allele
+ * frequencies instead of the genotype probabilities and understates the
+ * result (see `combineFrequencies`).
+ *
+ * The weights are the prior probabilities that the donor came from each
+ * population and must sum to 1. Equal weights say only "one of these, no
+ * reason to prefer either". Every table must cover every locus in the profile.
+ * @param dbs {list of FrequencyDb} the candidate populations; at least one
+ * @param weights {list of float} the prior per population, summing to 1.0
+ * @param p {Profile} the profile
+ * @param theta {float} the sub-population correction, applied within each
+ *   population
+ * @return {float} the weighted random match probability
+ * @throws {Error} kind "forensicgenetics" on an empty list, a length mismatch,
+ *   a negative weight, or weights that do not sum to 1.0
+ */
+export func randomMatchProbabilityAcross(
+    dbs as list of FrequencyDb,
+    weights as list of float,
+    p as Profile,
+    theta as float) {
+    def nd as int init len($dbs);
+    def nw as int init len($weights);
+    if ($nd == 0) {
+        fail("randomMatchProbabilityAcross needs at least one database");
+    }
+    if ($nd != $nw) {
+        fail("got {$nd} databases but {$nw} weights");
+    }
+    def total as float init 0.0;
+    for (def w in $weights) {
+        if ($w < 0.0) {
+            fail("a population weight must not be negative");
+        }
+        $total = $total + $w;
+    }
+    if (math.abs($total - 1.0) > 0.001) {
+        fail("population weights sum to {$total}, not 1.0");
+    }
+    def out as float init 0.0;
+    def i as int init 0;
+    while ($i < $nd) {
+        $out = $out + $weights[$i] * randomMatchProbability($dbs[$i], $p, $theta);
+        $i = $i + 1;
+    }
+    return $out;
+}
+
+/**
+ * The single-source likelihood ratio when the donor's population is uncertain.
+ *
+ * `1 / randomMatchProbabilityAcross(...)`, on the same terms.
+ * @param dbs {list of FrequencyDb} the candidate populations
+ * @param weights {list of float} the prior per population, summing to 1.0
+ * @param p {Profile} the profile
+ * @param theta {float} the sub-population correction
+ * @return {float} the likelihood ratio
+ * @throws {Error} kind "forensicgenetics" as `randomMatchProbabilityAcross`,
+ *   or if the weighted probability is zero
+ */
+export func matchLikelihoodRatioAcross(
+    dbs as list of FrequencyDb,
+    weights as list of float,
+    p as Profile,
+    theta as float) {
+    def rmp as float init randomMatchProbabilityAcross($dbs, $weights, $p, $theta);
+    if ($rmp <= 0.0) {
+        fail("profile '" + $p.id + "' has a zero random match probability");
+    }
+    return 1.0 / $rmp;
+}
+
+# --- mixtures: inclusion / exclusion ----------------------------------------
+
+/**
+ * A mixture: the alleles observed at each locus of a mixed stain.
+ * @param id {string} a label for the mixture
+ * @param observed {map of string to list of string} locus -> observed alleles
+ * @return {Mixture} the mixture
+ * @throws {Error} kind "forensicgenetics" if a locus lists no alleles
+ */
+export func mixture(id as string, observed as map of string to list of string) {
+    def out as Mixture init Mixture{id: $id, loci: {}};
+    for (def locus in $observed) {
+        def seen as list of string init distinct($observed[$locus]);
+        if (len($seen) == 0) {
+            fail("mixture '" + $id + "' locus '" + $locus + "' lists no alleles");
+        }
+        $out.loci[$locus] = $seen;
+    }
+    return $out;
+}
+
+/**
+ * The loci a mixture covers, in insertion order.
+ * @param m {Mixture} the mixture
+ * @return {list of string} the locus names
+ */
+export func mixtureLoci(m as Mixture) {
+    return maps.keys($m.loci);
+}
+
+/**
+ * The probability of inclusion (PI) at one locus.
+ *
+ * `(sum of the observed alleles' frequencies)^2` - the chance that a random
+ * person's genotype at this locus is built entirely from alleles the mixture
+ * shows, and therefore cannot be excluded as a contributor. The sum is capped
+ * at 1.0, which the 5/2N floor can otherwise push past on a locus with many
+ * observed alleles.
+ *
+ * PI is deliberately theta-free: it is a count of who cannot be excluded, not
+ * a coancestry-corrected match probability.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param locus {string} the locus name
+ * @param observed {list of string} the alleles seen at that locus
+ * @return {float} the probability of inclusion
+ * @throws {Error} kind "forensicgenetics" on an empty allele list or a locus the
+ *   database does not cover
+ */
+export func inclusionProbability(fdb as FrequencyDb, locus as string, observed as list of string) {
+    def seen as list of string init distinct($observed);
+    if (len($seen) == 0) {
+        fail("locus '" + $locus + "': no observed alleles");
+    }
+    def total as float init 0.0;
+    for (def a in $seen) {
+        $total = $total + alleleFrequency($fdb, $locus, $a);
+    }
+    if ($total > 1.0) {
+        $total = 1.0;
+    }
+    return $total * $total;
+}
+
+/**
+ * The probability of exclusion (PE) at one locus: `1 - PI`.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param locus {string} the locus name
+ * @param observed {list of string} the alleles seen at that locus
+ * @return {float} the probability of exclusion
+ * @throws {Error} kind "forensicgenetics" as for `inclusionProbability`
+ */
+export func exclusionProbability(fdb as FrequencyDb, locus as string, observed as list of string) {
+    return 1.0 - inclusionProbability($fdb, $locus, $observed);
+}
+
+/**
+ * The combined probability of inclusion (CPI) across a mixture's loci.
+ *
+ * The product of the per-locus `inclusionProbability`: the proportion of the
+ * population that could not be excluded as a contributor at *every* locus.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param m {Mixture} the mixture
+ * @return {float} the combined probability of inclusion
+ * @throws {Error} kind "forensicgenetics" on an empty mixture or a locus the database
+ *   does not cover
+ */
+export func cpi(fdb as FrequencyDb, m as Mixture) {
+    if (len($m.loci) == 0) {
+        fail("mixture '" + $m.id + "' has no loci");
+    }
+    def out as float init 1.0;
+    for (def locus in $m.loci) {
+        $out = $out * inclusionProbability($fdb, $locus, $m.loci[$locus]);
+    }
+    return $out;
+}
+
+/**
+ * The combined probability of exclusion (CPE): `1 - CPI`.
+ *
+ * The proportion of the population excluded as a contributor by at least one
+ * locus - the number a CPI/CPE mixture report quotes.
+ * @param fdb {FrequencyDb} the reference frequencies
+ * @param m {Mixture} the mixture
+ * @return {float} the combined probability of exclusion
+ * @throws {Error} kind "forensicgenetics" as for `cpi`
+ */
+export func cpe(fdb as FrequencyDb, m as Mixture) {
+    return 1.0 - cpi($fdb, $m);
+}
+
+/**
+ * Whether every allele of `p`'s genotype at each shared locus appears in the
+ * mixture - the non-exclusion test CPI quantifies.
+ *
+ * Loci the mixture does not cover are skipped; a locus where the profile is
+ * untyped is skipped too. Sharing no locus at all is an error rather than a
+ * vacuous `true`: no data is not the same as not excluded.
+ * @param p {Profile} the profile under test
+ * @param m {Mixture} the mixture
+ * @return {bool} false as soon as one locus excludes the profile
+ * @throws {Error} kind "forensicgenetics" if the profile and mixture share no locus
+ */
+export func isIncluded(p as Profile, m as Mixture) {
+    def compared as int init 0;
+    for (def locus in $m.loci) {
+        if (maps.has($p.loci, $locus)) {
+            $compared = $compared + 1;
+            if (not coveredBy($p.loci[$locus], $m.loci[$locus])) {
+                return false;
+            }
+        }
+    }
+    if ($compared == 0) {
+        fail("profile '" + $p.id + "' and mixture '" + $m.id + "' share no locus, so the" +
+            " profile is neither included nor excluded - there is nothing to compare");
+    }
+    return true;
+}
+
+# coveredBy reports whether every allele of `g` appears among `observed`.
+func coveredBy(g as Genotype, observed as list of string) {
+    for (def a in alleles($g)) {
+        if (not lists.contains($observed, $a)) {
+            return false;
+        }
+    }
+    return true;
+}

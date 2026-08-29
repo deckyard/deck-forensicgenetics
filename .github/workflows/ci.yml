@@ -1,0 +1,237 @@
+# CI/CD for @jennifer/forensicgenetics.
+#
+#   every push / PR   -> fmt, lint, tests, examples, and a docs build
+#   push to main      -> the docs are published to GitHub Pages
+#   push of a v* tag  -> a GitHub release with a vendorable tarball
+#
+# Everything runs in the project's own container images, so the pipeline needs
+# nothing installed on the runner and reproduces exactly what a contributor
+# gets locally.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The deck declares `# pragma-jennifer-version: >=0.25.0`, which the
+  # interpreter enforces at read time - the 0.24.0 release refuses to load these
+  # files outright. 0.25.0 is not tagged yet, so :dev is the only build that
+  # satisfies the floor. Pin this to :0.25.0 the moment it ships: :dev is a
+  # moving tag, and a green run today should still be reproducible next year.
+  JENNIFER_IMAGE: ghcr.io/jennifer-language/jennifer:dev
+  # Grimoire needs Jennifer 0.25.0, which the image carries; only :latest and
+  # :main are published today.
+  GRIMOIRE_IMAGE: ghcr.io/jennifer-language/grimoire:latest
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull the interpreter image
+        run: docker pull "$JENNIFER_IMAGE"
+
+      - name: Report the interpreter version
+        run: docker run --rm "$JENNIFER_IMAGE" version
+
+      # Format in place and let git report the difference. This works on every
+      # interpreter version, unlike the newer `fmt -l`, and when it fails the
+      # log shows exactly which lines were wrong.
+      - name: Formatting
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+            "$JENNIFER_IMAGE" fmt -w src/*.j examples/*.j examples/lib/*.j
+          if ! git diff --quiet -- 'src/*.j' 'examples/*.j' 'examples/lib/*.j'; then
+            echo "::error::sources are not formatted; run: jennifer fmt -w src/*.j examples/*.j examples/lib/*.j"
+            git --no-pager diff -- 'src/*.j' 'examples/*.j' 'examples/lib/*.j'
+            exit 1
+          fi
+
+      # `lint` exits 1 on any finding, info level included: a 100-column limit,
+      # a block-nesting limit of 4, no unused imports, no calls inside string
+      # interpolation slots.
+      - name: Lint
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/work" -w /work "$JENNIFER_IMAGE" \
+            lint src/*.j examples/*.j examples/lib/*.j
+
+      # One overlay per module, each a white-box test of the module beside it.
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          for f in src/*_test.j; do
+            echo "::group::$f"
+            docker run --rm -v "$PWD:/work" -w /work "$JENNIFER_IMAGE" test "$f"
+            echo "::endgroup::"
+          done
+
+      # The examples are the end-to-end path: frequency-table ingest through to
+      # a printed likelihood ratio. A change that breaks it fails here even if
+      # every unit test still passes.
+      - name: Examples
+        run: |
+          set -euo pipefail
+          for e in examples/*.j; do
+            echo "::group::$e"
+            docker run --rm -v "$PWD:/work" -w /work "$JENNIFER_IMAGE" run "$e"
+            echo "::endgroup::"
+          done
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull the Grimoire image
+        run: docker pull "$GRIMOIRE_IMAGE"
+
+      # The image's entrypoint is Grimoire itself, so everything after the image
+      # name is a Grimoire command. --user keeps site/ owned by the runner so
+      # the artifact upload can read it.
+      #
+      # The build exits 1 when docs/SUMMARY.md names a chapter with no file
+      # behind it, which is what makes a broken outline fail CI.
+      - name: Build the book
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/work" "$GRIMOIRE_IMAGE" build --verbose
+
+      - name: Check the build produced a site
+        run: test -s site/index.html
+
+      - name: Upload the Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: GitHub Pages
+    runs-on: ubuntu-latest
+    needs: docs
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One deployment at a time, and never cancel one in flight - a half-applied
+    # Pages deployment is worse than a slightly stale one.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [test, docs]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with the manifest would publish a version nobody
+      # can resolve, so it fails the release rather than shipping.
+      - name: Tag must match deck.json
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          declared="$(jq -er '.package.version' deck.json)"
+          if [ "$version" != "$declared" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match deck.json version $declared"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      # The artifact jvc installs, shaped by deck-spec.md section 10: the archive
+      # MUST contain a src/ directory holding the entrypoint src/<deck>.j, under
+      # at most one wrapping directory (which jvc strips). jvc vendors the
+      # contents of src/ to vendor/jennifer/forensicgenetics/ and filters the
+      # *_test.j overlays out on the way; the overlays still ship, so the publish
+      # gate and an install-time check can run them. Everything else in the
+      # bundle - the manifest, the README - is carried but never vendored.
+      - name: Build the deck tarball
+        run: |
+          set -euo pipefail
+          root="dist/forensicgenetics-${version}"
+          mkdir -p "$root/src"
+          cp src/*.j "$root/src/"
+          # The licence travels with the work.
+          cp deck.json README.md LICENSE "$root/"
+          tar -czf "forensicgenetics-${version}.tar.gz" -C dist "forensicgenetics-${version}"
+          sha256sum "forensicgenetics-${version}.tar.gz" | tee "forensicgenetics-${version}.tar.gz.sha256"
+
+      # jvc fails an install whose archive has no src/ or no entrypoint, so
+      # assert both here rather than discovering it from a consumer's bug report.
+      - name: Tarball must satisfy the deck spec
+        run: |
+          set -euo pipefail
+          listing="$(tar -tzf "forensicgenetics-${version}.tar.gz")"
+          for required in \
+            "forensicgenetics-${version}/src/forensicgenetics.j" \
+            "forensicgenetics-${version}/src/kinship.j" \
+            "forensicgenetics-${version}/src/pedigree.j" \
+            "forensicgenetics-${version}/src/lineage.j" \
+            "forensicgenetics-${version}/deck.json" \
+            "forensicgenetics-${version}/LICENSE"; do
+            if ! grep -qxF "$required" <<<"$listing"; then
+              echo "::error::release tarball is missing $required"
+              echo "$listing"
+              exit 1
+            fi
+          done
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: forensicgenetics ${{ env.version }}
+          files: |
+            forensicgenetics-${{ env.version }}.tar.gz
+            forensicgenetics-${{ env.version }}.tar.gz.sha256
+          body: |
+            Forensic and statistical genetics for Jennifer: STR match
+            probabilities, kinship and paternity likelihood ratios,
+            general-pedigree peeling, and mtDNA / Y-STR lineage markers.
+
+            **Documentation:** https://jennifer-language.github.io/deck-forensicgenetics/
+
+            **Install** - copy `src/` into a project-local vendor tree (what
+            `jvc` will do for you once it ships):
+
+            ```sh
+            mkdir -p vendor/jennifer/forensicgenetics
+            tar -xzf forensicgenetics-${{ env.version }}.tar.gz
+            cp forensicgenetics-${{ env.version }}/src/*.j vendor/jennifer/forensicgenetics/
+            rm vendor/jennifer/forensicgenetics/*_test.j
+            ```
+
+            ```jennifer
+            import "@jennifer/forensicgenetics/" as forensics;
+            ```
+
+            Requires Jennifer >= 0.25.0. Pure `.j`, no deck dependencies,
+            TinyGo-clean.
+
+            Not a validated forensic tool - see the documentation's
+            [Limitations](https://jennifer-language.github.io/deck-forensicgenetics/project/limitations.html).

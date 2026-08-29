@@ -1,0 +1,7 @@
+# Grimoire output
+site/
+
+# Release staging
+dist/
+*.tar.gz
+*.tar.gz.sha256

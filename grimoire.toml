@@ -1,0 +1,33 @@
+# Grimoire book configuration for the @jennifer/forensicgenetics documentation.
+
+[book]
+title = "@jennifer/forensicgenetics"
+description = "Forensic and statistical genetics for Jennifer: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers."
+language = "en"
+src = "docs"
+
+[build]
+out = "site"
+clean = true
+jobs = 0
+
+[html]
+theme = "grimoire"
+mode = "auto"
+navPosition = "left"
+tocPosition = "right"
+tocDepth = 3
+sectionNumbers = true
+repoUrl = "https://github.com/jennifer-language/deck-forensicgenetics"
+repoLabel = "Source"
+editUrl = "https://github.com/jennifer-language/deck-forensicgenetics/edit/main/docs/{path}"
+
+[highlight]
+enabled = true
+
+[search]
+enabled = true
+bodyChars = 1200
+
+[pdf]
+enabled = false
