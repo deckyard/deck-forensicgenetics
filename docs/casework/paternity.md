@@ -1,121 +1,92 @@
 # Paternity
 
-A paternity case is not a pairwise comparison. Father, mother and child are all
-available, and conditioning on the mother's genotype is strictly more
-informative than treating father and child as an anonymous pair - the mother
-tells you which of the child's alleles the father had to supply.
-
-So paternity gets its own trio calculation.
+With mother, child and alleged father all typed, conditioning on the mother
+tells you which of the child's alleles the father had to supply. That is more
+informative than a pairwise father/child LR, so paternity has its own trio
+calculation.
 
 ## The paternity index
 
-At one locus, the paternity index is a ratio of two probabilities of the
-child's genotype:
+At one locus:
 
 ```
-X = P(child | mother, alleged father)
-Y = P(child | mother, a random man from the reference population)
+X  = P(child | mother, alleged father)
+Y  = P(child | mother, random man from the reference population)
 PI = X / Y
 ```
 
-`X` uses the alleged father's actual transmission probabilities; `Y` uses the
-population allele frequencies in their place.
+`X` uses the alleged father's transmission probabilities, with mutation; `Y`
+uses population allele frequencies. The full formula is in
+[Formulae and sources](../project/formulae.md#paternity-the-trio-index).
 
 ```jennifer
 kinship.paternityIndexAt($db, $motherGt, $childGt, $fatherGt, kinship.NO_MUTATION);
-```
 
-Across the panel, the **combined paternity index**:
-
-```jennifer
 def cpi as float init kinship.paternityIndex($mother, $child, $allegedFather, $db);
+kinship.trioLoci($db, $mother, $child, $allegedFather);   # the loci used
 ```
 
-The loci used are those all three profiles and the database share:
-
-```jennifer
-kinship.trioLoci($db, $mother, $child, $allegedFather);
-```
+The combined paternity index (CPI) is the product over the loci all three
+profiles and the table share. No shared locus throws.
 
 ## Probability of paternity
 
 ```jennifer
-def w as float init kinship.probabilityOfPaternity($cpi);            # prior 0.5
-def w as float init kinship.probabilityOfPaternityPrior($cpi, 0.1);  # explicit prior
+def w as float init kinship.probabilityOfPaternity($cpi);              # prior 0.5
+def w01 as float init kinship.probabilityOfPaternityPrior($cpi, 0.1);  # prior 0.1
 ```
 
-`W = CPI / (CPI + 1)` under the conventional neutral prior, or
-`W = CPI·π / (CPI·π + (1-π))` for a stated prior `π`.
+`W = CPI / (CPI + 1)` at prior 0.5, or `W = CPI·π / (CPI·π + (1-π))` for a
+prior `π` in `(0, 1)`. `W` restates the CPI and adds no evidence; a 99.8%
+rests on assuming the man was as likely as not the father before any DNA was
+examined. Report both numbers and the prior.
 
-`W` is a **restatement** of the CPI, not additional evidence, and its
-plausible-looking 99.8% hides an assumption that the man was as likely as not to
-be the father before any DNA was examined. Quote both numbers, and say which
-prior the second one assumes.
-
-## A maternal exclusion is an error
+## Maternal exclusion throws
 
 If the child carries neither of the mother's alleles at a locus, `Y` is zero
-and no paternity index exists. That is a sample-handling or pedigree problem -
-a mislabelled tube, the wrong mother - not a paternity index of zero, so the
-deck throws rather than returning a number:
+and no index exists. That points to a sample or pedigree error (a mislabelled
+tube, the wrong mother), so the call throws:
 
 ```
 locus 'D8S1179': the mother cannot have transmitted either of the child's
 alleles - this is a maternal exclusion, not a paternity index
 ```
 
-## Mutation: surviving one inconsistent locus
+## Mutation
 
-STR loci mutate, at roughly one or two per thousand meioses, and almost always
-by a single repeat unit. Over a fifteen-locus panel that is common enough to
-expect occasionally - so a true father will sometimes fail to explain one
-locus.
-
-Without a mutation model, that single locus gives `X = 0`, drives the CPI to
-zero, and excludes him. **That is a false exclusion**, and avoiding it is what
-the mutation model is for.
+STR loci mutate at roughly one or two per thousand meioses, almost always by
+one repeat. Over a fifteen-locus panel a true father will occasionally fail to
+explain one locus. Without a mutation model that locus gives `X = 0` and a
+false exclusion.
 
 ```jennifer
 def bad as list of string init kinship.inconsistentLoci($mother, $child,
     $allegedFather, $db);
 ```
 
-lists the loci that are Mendelian-inconsistent. One is the classic single
-inconsistency; several mean exclusion, and no mutation model should rescue that.
+lists the Mendelian-inconsistent loci. One is the classic single
+inconsistency; several mean exclusion, and no mutation model should rescue
+that.
 
-### The model
-
-The probability that an allele is transmitted as a different one, `k` repeat
-steps away in a given direction:
-
-```
-P(k steps, one direction) = rate · (1 - decay) · decay^(k-1) / 2
-P(no change)              = 1 - rate
-```
-
-The rates over all non-zero changes sum to `rate`, and one-step changes
-dominate. A microvariant difference smaller than a full repeat - 15 to 15.2 -
-counts as one step.
+The stepwise model (formula in
+[Formulae and sources](../project/formulae.md#stepwise-mutation-model)) gives
+`1 - rate` for no change and `rate · (1 - decay) · decay^(k-1) / 2` for a
+`k`-step change in one direction. A microvariant difference below one repeat
+(15 to 15.2) is one step. It applies to the alleged father's transmission
+only; with `NO_MUTATION` the index is the strict Mendelian one.
 
 ```jennifer
 kinship.mutationProbability(kinship.DEFAULT_MUTATION, "D8S1179", "16", "15");
 ```
 
-Two constants:
+| Model | rate | decay | Use |
+| --- | --- | --- | --- |
+| `NO_MUTATION` | 0.0 | 0.0 | strict Mendelian; one inconsistency excludes |
+| `DEFAULT_MUTATION` | 0.002 | 0.1 | used by `paternityIndex`; a placeholder, not a published rate |
 
-- **`NO_MUTATION`** - strict Mendelian transmission. One inconsistency
-  excludes.
-- **`DEFAULT_MUTATION`** - `rate = 0.002`, `decay = 0.1`. This is a
-  **placeholder** in the right order of magnitude, not a published figure.
-
-`paternityIndex` uses `DEFAULT_MUTATION`; `paternityIndexWith` takes an
-explicit model.
-
-### Use real rates
-
-Observed mutation rates vary over roughly an order of magnitude between loci,
-and a rescued trio's CPI is directly proportional to the rate assumed at the
-inconsistent locus. Substitute published per-locus rates:
+A rescued trio's CPI is proportional to the rate assumed at the inconsistent
+locus, and observed rates vary about tenfold between loci. Set published
+per-locus rates:
 
 ```jennifer
 def model as kinship.MutationModel init kinship.DEFAULT_MUTATION;
@@ -126,14 +97,10 @@ def cpi as float init kinship.paternityIndexWith($mother, $child,
     $allegedFather, $db, $model);
 ```
 
-The mutation model applies to the **alleged father's transmission only** - it
-is his transmission that is in question. With `NO_MUTATION` the calculation
-reduces exactly to the Mendelian one.
+## Worked example
 
-## A worked example
-
-From `examples/paternity.j`. The alleged father is 16/16 at D8S1179 and the
-child needs a 15:
+`examples/paternity.j`. The alleged father is 16/16 at D8S1179 and the child
+needs a 15:
 
 ```
 locus        mother  child    father     PI strict  PI mutation
@@ -156,22 +123,9 @@ W (prior 0.5)         = 0.99783441
 W (prior 0.1)         = 0.98084163
 ```
 
-Three things to read off it. Every consistent locus loses about 0.1% to the
-`(1 - rate)` discount - mutation is not free even where nothing mutated. The
-inconsistent locus contributes 0.0219 instead of 0, which costs roughly two
-orders of magnitude but does not exclude. And the choice of prior moves `W`
-from 99.78% to 98.08% on identical evidence.
+Each consistent locus loses about 0.1% to the `(1 - rate)` factor. The
+inconsistent locus contributes 0.0219 instead of 0. The prior moves `W` from
+99.78% to 98.08% on the same evidence.
 
-## When the father is unavailable
-
-Everything above needs the alleged father's profile. When he is dead or
-missing, the case rests on his relatives - his parents, his other children -
-and that is a pedigree question, not a trio one. See
-[General pedigrees](pedigrees.md), where the same example is worked through
-his parents instead.
-
-## Related
-
-- [Kinship](kinship.md) - the general pairwise machinery
-- [General pedigrees](pedigrees.md) - when the father is unavailable
-- [`kinship` reference](../reference/kinship.md)
+When the alleged father cannot be typed, the case goes through his relatives:
+see [General pedigrees](pedigrees.md).

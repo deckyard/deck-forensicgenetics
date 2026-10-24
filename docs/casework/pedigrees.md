@@ -1,35 +1,24 @@
 # General pedigrees
 
-[Kinship](kinship.md) answers questions about a pair. That approach breaks down
-the moment a third person is involved - and in practice a third person almost
-always is.
-A missing person is identified through two siblings and a niece. An alleged
-father is dead, and only his parents can be typed. A disaster victim is matched
-to a family group rather than to an individual.
+[Kinship](kinship.md) handles a pair. A missing person identified through two
+siblings and a niece, or an alleged father known only through his parents,
+needs the likelihood of the whole pedigree.
 
-Those need the likelihood of the **whole pedigree**.
+## Peeling
 
-## The problem, and peeling
+The likelihood at one locus sums over every genotype of every untyped member,
+which is exponential if done literally. Elston-Stewart peeling makes it linear
+in the number of people: each branch of the individual/family tree is reduced
+to a vector over the genotypes of the person joining it to the rest, and these
+vectors are passed along the tree's edges. The recursion is in
+[Formulae and sources](../project/formulae.md#pedigree-likelihood).
 
-The likelihood of a pedigree at one locus is a sum over every genotype every
-untyped member could have. Taken literally that is exponential in the number of
-untyped people - a handful of them and it stops being computable.
-
-**Elston-Stewart peeling** makes it linear. The pedigree is a tree of
-individuals and nuclear families; each branch is summarised - *peeled* - into a
-vector over the genotypes of the single person connecting it to the rest. The
-sums move inward instead of nesting. This module peels by passing those vectors
-along the tree's edges.
-
-Two consequences you will meet:
-
-- **Only simple pedigrees.** Peeling needs the individual/family graph to be a
-  forest. Loops are rejected, not mis-summed. See below.
-- **Allele lumping.** Alleles no member's genotype shows are pooled into one
-  class carrying their combined frequency. Because untyped members are
-  unobserved those alleles are exchangeable, so the pooling is **exact**, not
-   an approximation - and this keeps a twenty-allele locus down to a
-  handful of genotype classes.
+- Simple pedigrees only: the individual/family graph must be a forest. Loops
+  throw (see [Loops](#loops)).
+- Alleles no typed member shows are lumped into one class with their combined
+  frequency. Untyped members' alleles are exchangeable, so this is exact, and
+  it keeps a twenty-allele locus to a few genotype classes.
+- `θ = 0`.
 
 ## Building a pedigree
 
@@ -40,15 +29,12 @@ $ped = pedigree.withFounder($ped, "GM", "f");
 $ped = pedigree.withChild($ped, "FA", "m", "GF", "GM");
 ```
 
-A **founder** has no parents in the pedigree; their genotype comes from the
-population. Everyone else names **both** parents - a member with only one
-recorded parent is rejected, because the missing parent is still a source of
-alleles and leaving them out changes the answer.
+A founder's genotype prior is the population frequency. Everyone else names
+both parents: a member with one parent recorded throws, because the missing
+parent still contributes alleles. Parents may be added after the child.
 
-`sex` is `"m"`, `"f"` or `""`. It is recorded but not used: the autosomal
-calculation is symmetric in the two parental roles.
-
-Inspecting:
+`sex` is `"m"`, `"f"` or `""`. It is recorded and not used: the autosomal
+calculation treats both parents alike.
 
 ```jennifer
 pedigree.members($ped);            # ids, insertion order
@@ -64,13 +50,11 @@ pedigree.validate($ped);      # throws, naming the problem
 pedigree.isSimple($ped);      # bool
 ```
 
-`validate` checks that every named parent exists, that nobody is their own
-ancestor, and that the individual/family graph is a forest. Every likelihood
-function calls it first.
+`validate` checks that every named parent is a member, that nobody is their
+own ancestor, and that the individual/family graph is a forest. Every
+likelihood function calls it first.
 
 ### Loops
-
-A consanguineous mating closes a loop:
 
 ```jennifer
 # Two full siblings have a child together.
@@ -84,60 +68,42 @@ pedigree 'loop' contains a loop (a consanguineous mating or a repeated
 marriage); Elston-Stewart peeling needs a simple pedigree
 ```
 
-Handling loops needs cutset conditioning, which is not implemented. Rejecting
-them is the honest alternative to returning a number that is quietly wrong.
-
-A half-sibling pedigree - one father, two mothers - is **not** a loop, and the
-check does not over-reject it.
+Loops need cutset conditioning, which is not implemented. A half-sibling
+pedigree (one father, two mothers) is not a loop.
 
 ## Likelihoods
 
-At one locus, with a genotype map for the typed members:
-
 ```jennifer
 def l as float init pedigree.locusLikelihood($ped, $genotypes, $db, "TH01");
-```
 
-Members absent from `genotypes` are untyped and summed out; ids that are not
-pedigree members are ignored.
-
-Across a panel, from profiles keyed by member id:
-
-```jennifer
 def loci as list of string init pedigree.pedigreeLoci($ped, $profiles, $db);
-def l as float init pedigree.pedigreeLikelihood($ped, $profiles, $db);
+def lp as float init pedigree.pedigreeLikelihood($ped, $profiles, $db);
 def logL as float init pedigree.log10PedigreeLikelihood($ped, $profiles, $db);
 ```
 
-A locus counts if the database covers it and at least one pedigree member is
-typed there. `pedigreeLikelihood` underflows on a long panel - prefer the
-log form, or take a ratio.
+`$genotypes` maps member id to `Genotype` at one locus; `$profiles` maps member
+id to `Profile`. Members without an entry are untyped and summed out; ids that
+are not members are ignored. A locus is used if the table covers it and at
+least one member is typed there. `pedigreeLikelihood` underflows on a long
+panel; use the log form or a ratio.
 
 ## The likelihood ratio
 
-State both hypotheses as pedigrees over the same people and divide:
-
 ```jennifer
 def lr as float init pedigree.pedigreeLR($h1, $h2, $profiles, $db);
+pedigree.typedMembers($h1, $profiles);   # who contributes data
 ```
 
-The ratio is taken locus by locus, so it stays in range where either likelihood
-alone would underflow.
+The ratio is taken locus by locus, so it stays in range where either
+likelihood alone would underflow. Both pedigrees must type the same members,
+or the call throws; untyped members may differ, which is how a hypothesis adds
+an unknown alternative father. A denominator likelihood of zero at any locus
+throws.
 
-Both pedigrees must have the **same typed members**, and `pedigreeLR` refuses
-otherwise - scoring two hypotheses against different data makes their ratio
-meaningless. Untyped members may differ freely, and that is exactly how a
-hypothesis introduces an unknown alternative father.
+## Worked example: deficient paternity
 
-```jennifer
-pedigree.typedMembers($ped, $profiles);   # who actually contributes
-```
-
-## A worked example: deficient paternity
-
-The alleged father is unavailable, so the case is made through his parents.
-Four people are typed - the two grandparents, the mother and the child - and
-the man himself never is.
+The alleged father is unavailable. The grandparents, the mother and the child
+are typed.
 
 ```
   H1                              H2
@@ -148,25 +114,8 @@ the man himself never is.
           CH
 ```
 
-```jennifer
-def h1 as pedigree.Pedigree init pedigree.pedigree("son of GF x GM");
-$h1 = pedigree.withFounder($h1, "GF", "m");
-$h1 = pedigree.withFounder($h1, "GM", "f");
-$h1 = pedigree.withFounder($h1, "MO", "f");
-$h1 = pedigree.withChild($h1, "FA", "m", "GF", "GM");
-$h1 = pedigree.withChild($h1, "CH", "m", "FA", "MO");
-
-def h2 as pedigree.Pedigree init pedigree.pedigree("unrelated man");
-$h2 = pedigree.withFounder($h2, "GF", "m");
-$h2 = pedigree.withFounder($h2, "GM", "f");
-$h2 = pedigree.withFounder($h2, "MO", "f");
-$h2 = pedigree.withFounder($h2, "UN", "m");
-$h2 = pedigree.withChild($h2, "CH", "m", "UN", "MO");
-
-def lr as float init pedigree.pedigreeLR($h1, $h2, $profiles, $db);
-```
-
-`examples/pedigree.j` prints it locus by locus:
+The pedigrees are built as in the [Quick start](../getting-started/quick-start.md#5-a-pedigree).
+`examples/pedigree.j` prints:
 
 ```
 locus       L(H1)          L(H2)          LR
@@ -184,25 +133,13 @@ combined LR = 504.29
 for contrast, the pairwise grandparent LR (GF vs CH alone) = 53.67
 ```
 
-The last line is the point of the module. Asking the pairwise question - *is
-the child a grandchild of GF?* - throws GM away entirely, and with her the
-constraint that the two grandparents must **jointly** explain the child's
-paternal allele. Using both at once is worth roughly ten times as much.
+The pairwise question (is CH a grandchild of GF?) ignores GM and the
+constraint that both grandparents must jointly explain the child's paternal
+allele. Using both is worth about ten times as much here.
 
 ## Correctness
 
-Peeling is easy to get subtly wrong, so the test overlay checks it against
-`kinship.j` rather than against itself. A pedigree LR built by peeling must
-reproduce the closed-form result that module computes an entirely different
-way, and the suite asserts that for parent/child, full siblings, half siblings,
-grandparent, avuncular, and the trio paternity index - all to the last digit.
-
-Agreement between two independent derivations is much stronger evidence than
-either matching a number captured from itself. See
-[Testing and contributing](../project/testing.md).
-
-## Related
-
-- [Kinship](kinship.md) - the pairwise form, and where it runs out
-- [Paternity](paternity.md) - the trio, when the father is available
-- [`pedigree` reference](../reference/pedigree.md)
+The test overlay checks peeling against `kinship.j`'s closed forms, which share
+no code with it: parent/child, full siblings, half siblings, grandparent,
+avuncular and the trio paternity index, to a relative tolerance of 1e-9. See
+[Testing and contributing](../project/testing.md#cross-validation-between-modules).

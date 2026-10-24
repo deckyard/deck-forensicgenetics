@@ -1,41 +1,33 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Relationship testing: kinship likelihood ratios and paternity.
+ * Pairwise kinship likelihood ratios and trio paternity.
  *
- * Two people who are related share alleles **identical by descent** (IBD) more
- * often than chance allows, and for a pair of non-inbred individuals that
- * relationship is fully described by three numbers - the IBD coefficients
- * `(k0, k1, k2)`, the probability that the pair shares 0, 1 or 2 alleles by
- * descent at a locus. Parent and child always share exactly one (0, 1, 0);
- * full siblings share (1/4, 1/2, 1/4); half siblings share (1/2, 1/2, 0).
- *
- * From those coefficients the joint genotype probability at a locus is
+ * A non-inbred pair's relationship is its IBD coefficients `(k0, k1, k2)`: the
+ * probabilities of sharing 0, 1 or 2 alleles identical by descent at a locus.
+ * The joint genotype probability at one locus is
  *
  * ```
- *   k0 pa pb          + k1 (pa δab + pb δaa)/2 + k2 δaa δab
+ *   k0 P(Ga) P(Gb) + k1 T1(Ga, Gb) + k2 [Ga == Gb] P(Ga)
  * ```
  *
- * where `T1` conditions on one of B's alleles being a copy of one of A's.
- * A kinship LR is that probability under one relationship over the same under
+ * where `T1` conditions on one of B's alleles being a copy of one of A's. A
+ * kinship LR is that probability under one relationship over the same under
  * another, multiplied across loci.
  *
- * **Theta is not applied here.** The joint IBD probabilities use the plain
- * product rule (theta = 0), because the sub-population correction does not
- * extend to the IBD-1 term. Use `forensics.randomMatchProbability` with a
- * theta when a single-source match probability is what you need.
+ * Theta is not applied: every probability here uses the plain product rule
+ * (theta = 0), because the sub-population correction does not extend to the
+ * IBD-1 term.
  *
- * Paternity gets its own trio calculation - `paternityIndex` over mother,
- * child and alleged father - because conditioning on the mother's genotype is
- * strictly more informative than treating father and child as an anonymous
- * pair. A stepwise mutation model lets a trio survive the single locus where the
- * child carries an allele the alleged father cannot have transmitted, which would
- * otherwise be a false exclusion.
+ * `paternityIndex` conditions on the mother's genotype, which a pairwise
+ * father/child LR cannot. Its stepwise mutation model keeps a single locus
+ * where the child carries an allele the alleged father cannot have transmitted
+ * from excluding him outright.
  * @module kinship
  * @example
- * import "@jennifer/forensicgenetics/kinship.j" as kinship;
+ * import "@deckyard/forensicgenetics/kinship.j" as kinship;
  *
  * def pi as float init kinship.paternityIndex($mother, $child, $af, $db);
  * def w as float init kinship.probabilityOfPaternity($pi);
@@ -51,9 +43,8 @@ import "./forensicgenetics.j" as forensics;
 /**
  * A relationship, as its IBD coefficients.
  *
- * `k0 + k1 + k2` must be 1. The coefficients are for non-inbred, outbred
- * pairs; an inbred pedigree needs the nine condensed Jacquard coefficients,
- * which this pair-wise form does not carry.
+ * `k0 + k1 + k2` is 1. The form covers non-inbred pairs only; an inbred
+ * pedigree needs the nine condensed Jacquard coefficients.
  * @field name {string} a label for the relationship
  * @field k0 {float} the probability of sharing no allele identical by descent
  * @field k1 {float} the probability of sharing exactly one
@@ -77,7 +68,7 @@ export def const UNRELATED as Relationship init Relationship{
 };
 
 /**
- * Parent and child, (0, 1, 0) - exactly one allele shared at every locus.
+ * Parent and child, (0, 1, 0): exactly one allele shared at every locus.
  */
 export def const PARENT_CHILD as Relationship init Relationship{
     name: "parent-child",
@@ -99,10 +90,8 @@ export def const FULL_SIBLINGS as Relationship init Relationship{
 /**
  * Half siblings, (1/2, 1/2, 0).
  *
- * Autosomal STRs cannot tell half siblings from an uncle/nephew or a
- * grandparent/grandchild pair: all three have the same IBD coefficients, and
- * so the same likelihood ratio. Distinguishing them needs lineage markers
- * (`lineage.j`) or a denser panel.
+ * `GRANDPARENT` and `AVUNCULAR` have the same coefficients and so the same
+ * likelihood ratio; autosomal STRs cannot separate the three.
  */
 export def const HALF_SIBLINGS as Relationship init Relationship{
     name: "half siblings",
@@ -112,7 +101,7 @@ export def const HALF_SIBLINGS as Relationship init Relationship{
 };
 
 /**
- * Grandparent and grandchild, (1/2, 1/2, 0) - IBD-identical to half siblings.
+ * Grandparent and grandchild, (1/2, 1/2, 0); IBD-identical to half siblings.
  */
 export def const GRANDPARENT as Relationship init Relationship{
     name: "grandparent",
@@ -122,7 +111,7 @@ export def const GRANDPARENT as Relationship init Relationship{
 };
 
 /**
- * Uncle/aunt and nephew/niece, (1/2, 1/2, 0) - IBD-identical to half siblings.
+ * Uncle/aunt and nephew/niece, (1/2, 1/2, 0); IBD-identical to half siblings.
  */
 export def const AVUNCULAR as Relationship init Relationship{
     name: "avuncular",
@@ -154,14 +143,9 @@ export def const IDENTICAL as Relationship init Relationship{
 /**
  * A stepwise STR mutation model.
  *
- * A mutation adds or removes whole repeat units, overwhelmingly one at a time.
- * The model gives a locus a per-meiosis mutation rate and a geometric decay
- * over the number of steps: the probability of an exactly-`k`-step change in a
- * given direction is `rate * (1 - decay) * decay^(k-1) / 2`, so the rates over
- * all non-zero changes sum to `rate` and one-step changes dominate.
- *
- * Mutation rates differ substantially between loci, so `perLocus` overrides the
- * blanket `rate` where a published locus-specific rate is available.
+ * The probability of an exactly-`k`-step change in one direction is
+ * `rate * (1 - decay) * decay^(k-1) / 2`; over all non-zero changes in both
+ * directions these sum to `rate`. `perLocus` overrides `rate` for named loci.
  * @field rate {float} the per-locus, per-meiosis mutation rate
  * @field decay {float} the geometric decay per additional repeat step, in [0, 1)
  * @field perLocus {map of string to float} locus -> rate, overriding `rate`
@@ -205,10 +189,9 @@ export func relationship(name as string, k0 as float, k1 as float, k2 as float) 
 # --- transmission and mutation ----------------------------------------------
 
 /**
- * The probability that a parent with genotype `g` transmits `allele`.
- *
- * 1.0 from a homozygote for that allele, 0.5 from a heterozygote carrying it,
- * 0.0 otherwise - Mendel's first law, before any mutation.
+ * The Mendelian probability that a parent with genotype `g` transmits
+ * `allele`: 1.0 from a homozygote for it, 0.5 from a heterozygote carrying it,
+ * 0.0 otherwise. No mutation.
  * @param g {Genotype} the parent's genotype
  * @param allele {string} the allele label
  * @return {float} the transmission probability
@@ -225,10 +208,10 @@ export func transmissionProbability(g as forensics.Genotype, allele as string) {
 }
 
 /**
- * A stepwise mutation model.
+ * A stepwise mutation model with no per-locus overrides.
  * @param rate {float} the per-locus, per-meiosis mutation rate, in [0, 1)
  * @param decay {float} the geometric decay per extra repeat step, in [0, 1)
- * @return {MutationModel} the model, with no per-locus overrides
+ * @return {MutationModel} the model
  * @throws {Error} kind "kinship" on an out-of-range rate or decay
  */
 export func mutationModel(rate as float, decay as float) {
@@ -243,7 +226,7 @@ export func mutationModel(rate as float, decay as float) {
 
 /**
  * A copy of `model` with one locus's mutation rate overridden.
- * @param model {MutationModel} the model
+ * @param model {MutationModel} the model to copy
  * @param locus {string} the locus name
  * @param rate {float} that locus's per-meiosis mutation rate, in [0, 1)
  * @return {MutationModel} the updated copy
@@ -259,10 +242,8 @@ export func withLocusRate(model as MutationModel, locus as string, rate as float
 }
 
 /**
- * No mutation - Mendelian transmission only.
- *
- * With this model a single inconsistent locus excludes the alleged father
- * outright, which is why it is not the default.
+ * No mutation: Mendelian transmission only. A single inconsistent locus
+ * excludes the alleged father.
  */
 export def const NO_MUTATION as MutationModel init MutationModel{
     rate: 0.0,
@@ -273,10 +254,9 @@ export def const NO_MUTATION as MutationModel init MutationModel{
 /**
  * A generic autosomal STR mutation model: 0.002 per meiosis, 0.1 decay.
  *
- * A placeholder in the right order of magnitude for paternal autosomal STR
- * mutation, with one-step changes making up 90% of mutations. Casework should
- * substitute published per-locus rates through `withLocusRate` - observed rates
- * range over roughly an order of magnitude between loci.
+ * A placeholder of the right order of magnitude, not a published rate;
+ * one-step changes are 90% of mutations. Observed rates vary about tenfold
+ * between loci, so set published ones with `withLocusRate`.
  */
 export def const DEFAULT_MUTATION as MutationModel init MutationModel{
     rate: 0.002,
@@ -293,20 +273,19 @@ func rateFor(model as MutationModel, locus as string) {
 }
 
 /**
- * The probability that an allele `source` is transmitted as `target` under a
- * stepwise mutation model.
+ * The probability that allele `source` is transmitted as `target`.
  *
- * `1 - rate` when the two are the same allele, and
- * `rate * (1 - decay) * decay^(k-1) / 2` for a change of `k` repeat steps in
- * one direction. A microvariant difference below a full repeat (15 -> 15.2)
- * counts as one step.
- * @param model {MutationModel} the model
+ * `1 - rate` when they are equal, and `rate * (1 - decay) * decay^(k-1) / 2`
+ * for a change of `k` repeat steps, `k` being the absolute difference in
+ * repeat count rounded to the nearest integer and at least 1 (15 -> 15.2 is
+ * one step). With a rate of 0 a change has probability 0.
+ * @param model {MutationModel} the mutation model
  * @param locus {string} the locus, for a per-locus rate
  * @param source {string} the parent's allele
  * @param target {string} the transmitted allele
  * @return {float} the transmission probability under mutation
- * @throws {Error} kind "kinship" if a changed allele has no numeric repeat
- *   count, so the number of steps is undefined
+ * @throws {Error} kind "kinship" if the rate is above 0 and either allele of a
+ *   change has no numeric repeat count
  */
 export func mutationProbability(
     model as MutationModel,
@@ -331,9 +310,8 @@ export func mutationProbability(
     if ($steps < 1) {
         $steps = 1;
     }
-    def geometric as float init (1.0 - $model.decay) * math.pow(
-        $model.decay,
-        convert.toFloat($steps - 1));
+    def geometric as float init (1.0 - $model.decay) *
+        math.pow($model.decay, convert.toFloat($steps - 1));
     return $rate * $geometric / 2.0;
 }
 
@@ -386,13 +364,12 @@ func ibdOneTerm(db as forensics.FrequencyDb, ga as forensics.Genotype, gb as for
 }
 
 /**
- * The joint probability of two genotypes at one locus under a relationship.
- *
- * `k0 P(Ga) P(Gb) + k1 T1(Ga, Gb) + k2 [Ga == Gb] P(Ga)`.
+ * The joint probability of two genotypes at one locus under a relationship:
+ * `k0 P(Ga) P(Gb) + k1 T1(Ga, Gb) + k2 [Ga == Gb] P(Ga)`, theta 0.
  * @param db {FrequencyDb} the reference frequencies
  * @param ga {Genotype} one person's genotype
  * @param gb {Genotype} the other's, at the same locus
- * @param rel {Relationship} the relationship being assumed
+ * @param rel {Relationship} the assumed relationship
  * @return {float} the joint probability
  * @throws {Error} kind "kinship" if the two genotypes are at different loci,
  *   or kind "forensicgenetics" if the database does not cover the locus
@@ -414,15 +391,15 @@ export func jointGenotypeProbability(
 }
 
 /**
- * The kinship likelihood ratio at one locus, for one relationship against
- * another.
+ * The kinship likelihood ratio at one locus, `rel` against `alt`.
  * @param db {FrequencyDb} the reference frequencies
  * @param ga {Genotype} one person's genotype
  * @param gb {Genotype} the other's, at the same locus
- * @param rel {Relationship} the relationship under the numerator hypothesis
- * @param alt {Relationship} the relationship under the denominator hypothesis
+ * @param rel {Relationship} the numerator hypothesis
+ * @param alt {Relationship} the denominator hypothesis
  * @return {float} the likelihood ratio at this locus
- * @throws {Error} kind "kinship" on mismatched loci or a zero denominator
+ * @throws {Error} kind "kinship" on mismatched loci, or if `alt` gives the
+ *   pair probability zero
  */
 export func kinshipLRAt(
     db as forensics.FrequencyDb,
@@ -462,14 +439,13 @@ export func pairLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as f
 }
 
 /**
- * The kinship likelihood ratio for a relationship against being unrelated.
+ * The kinship likelihood ratio for a relationship against `UNRELATED`.
  *
- * The product of `kinshipLRAt` over every locus the two profiles and the
- * database share. An LR above 1 favours the relationship; below 1 favours
- * unrelatedness.
+ * The product of `kinshipLRAt` over `pairLoci`; loci outside that set are
+ * ignored. Above 1 favours the relationship.
  * @param a {Profile} one person's profile
  * @param b {Profile} the other's
- * @param rel {Relationship} the relationship being tested
+ * @param rel {Relationship} the relationship to test
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
  * @throws {Error} kind "kinship" if the profiles and database share no locus
@@ -483,15 +459,12 @@ export func kinshipLR(
 }
 
 /**
- * The kinship likelihood ratio for one relationship against another.
- *
- * The general form: `kinshipLR` is this with `UNRELATED` as the alternative.
- * Testing full siblings against half siblings, say, is
- * `kinshipLRAgainst(a, b, FULL_SIBLINGS, HALF_SIBLINGS, db)`.
+ * The kinship likelihood ratio for one relationship against another, over
+ * `pairLoci`. `kinshipLR` is this with `UNRELATED` as `alt`.
  * @param a {Profile} one person's profile
  * @param b {Profile} the other's
- * @param rel {Relationship} the relationship under the numerator hypothesis
- * @param alt {Relationship} the relationship under the denominator hypothesis
+ * @param rel {Relationship} the numerator hypothesis
+ * @param alt {Relationship} the denominator hypothesis
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
  * @throws {Error} kind "kinship" if the profiles and database share no locus,
@@ -535,21 +508,19 @@ func childProbability(
 /**
  * The paternity index at one locus.
  *
- * `X / Y`, where `X` is the probability of the child's genotype given the
- * mother and the alleged father, and `Y` the same given the mother and a
- * random man from the reference population. The mutation model applies to the
- * alleged father's transmission only, which is what lets a trio survive a
- * single locus where the child carries an allele he cannot have transmitted
- * unchanged.
+ * `X / Y`: the probability of the child's genotype given the mother and the
+ * alleged father, over the same given the mother and a random man from the
+ * reference population. The mutation model applies to the alleged father's
+ * transmission only.
  * @param db {FrequencyDb} the reference frequencies
  * @param mother {Genotype} the mother's genotype
  * @param child {Genotype} the child's genotype
  * @param father {Genotype} the alleged father's genotype
- * @param model {MutationModel} the mutation model
+ * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the paternity index at this locus
- * @throws {Error} kind "kinship" if the three genotypes are not at the same
- *   locus, or if the mother cannot have transmitted either of the child's
- *   alleles (a maternal exclusion, which no paternity index can express)
+ * @throws {Error} kind "kinship" if the three genotypes are not at one locus,
+ *   or on a maternal exclusion (the mother can transmit neither of the child's
+ *   alleles)
  */
 export func paternityIndexAt(
     db as forensics.FrequencyDb,
@@ -602,9 +573,8 @@ export func trioLoci(
 /**
  * The combined paternity index (CPI) for a trio, under `DEFAULT_MUTATION`.
  *
- * The product of `paternityIndexAt` over every locus the three profiles and
- * the database share - loci only some of them carry are simply not part of the
- * comparison. Use `trioLoci` to see which loci contributed.
+ * The product of `paternityIndexAt` over `trioLoci`; loci outside that set
+ * are ignored.
  * @param mother {Profile} the mother's profile
  * @param child {Profile} the child's profile
  * @param allegedFather {Profile} the alleged father's profile
@@ -623,14 +593,12 @@ export func paternityIndex(
 
 /**
  * The combined paternity index for a trio under an explicit mutation model.
- *
- * Pass `NO_MUTATION` for the strict Mendelian calculation, in which a single
- * inconsistent locus drives the CPI to zero and excludes the alleged father.
+ * With `NO_MUTATION` one inconsistent locus makes the CPI zero.
  * @param mother {Profile} the mother's profile
  * @param child {Profile} the child's profile
  * @param allegedFather {Profile} the alleged father's profile
  * @param db {FrequencyDb} the reference frequencies
- * @param model {MutationModel} the mutation model
+ * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" if the trio and database share no locus, or on
  *   a maternal exclusion
@@ -647,7 +615,8 @@ export func paternityIndexWith(
     }
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out * paternityIndexAt(
+        $out = $out *
+            paternityIndexAt(
             $db,
             $mother.loci[$locus],
             $child.loci[$locus],
@@ -658,11 +627,8 @@ export func paternityIndexWith(
 }
 
 /**
- * The loci at which a trio is Mendelian-inconsistent with paternity.
- *
- * The loci whose paternity index is zero without a mutation model - the ones a
- * mutation model has to explain. One such locus is the classic single
- * inconsistency; several mean exclusion.
+ * The loci of `trioLoci` whose paternity index is zero under `NO_MUTATION`:
+ * the inconsistencies a mutation model has to explain.
  * @param mother {Profile} the mother's profile
  * @param child {Profile} the child's profile
  * @param allegedFather {Profile} the alleged father's profile
@@ -691,11 +657,9 @@ export func inconsistentLoci(
 }
 
 /**
- * The probability of paternity, `W = CPI / (CPI + 1)`.
+ * The probability of paternity under a prior of 0.5: `W = CPI / (CPI + 1)`.
  *
- * The posterior probability under the conventional neutral prior of 0.5. It is
- * a restatement of the CPI, not extra evidence: quote both, and say which
- * prior it assumes.
+ * A restatement of the CPI, not further evidence; report the prior with it.
  * @param cpi {float} the combined paternity index
  * @return {float} the probability of paternity, in [0, 1)
  * @throws {Error} kind "kinship" on a negative CPI
@@ -705,10 +669,8 @@ export func probabilityOfPaternity(cpi as float) {
 }
 
 /**
- * The probability of paternity under an explicit prior.
- *
- * `W = CPI * prior / (CPI * prior + (1 - prior))`. At `prior = 0.5` this is
- * `probabilityOfPaternity`.
+ * The probability of paternity under an explicit prior:
+ * `W = CPI * prior / (CPI * prior + (1 - prior))`.
  * @param cpi {float} the combined paternity index
  * @param prior {float} the prior probability of paternity, in (0, 1)
  * @return {float} the posterior probability of paternity

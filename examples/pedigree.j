@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # Deficient paternity: the alleged father is unavailable, so the case is made
@@ -15,7 +15,7 @@
 #
 # Run from the deck root:  jennifer run examples/pedigree.j
 #
-# The frequency table is synthetic - see testdata/frequencies.xml.
+# The frequency table is synthetic; see examples/lib/exampledb.j.
 use io;
 use math;
 

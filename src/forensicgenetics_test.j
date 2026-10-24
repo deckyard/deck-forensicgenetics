@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # White-box test overlay for forensicgenetics.j. Run with `jennifer test forensicgenetics_test.j`.
@@ -434,4 +434,129 @@ func weightCountMismatch() {
 
 func testWeightCountMustMatchDatabaseCount() {
     testing.assertThrows("weightCountMismatch", "forensicgenetics");
+}
+
+# --- documented edge cases with no assertion yet ----------------------------
+
+func emptyLocusName() {
+    withLocus(db("x"), "", 100, {"1": 0.5});
+}
+
+func negativeSampleSize() {
+    withLocus(db("x"), "L", -1, {"1": 0.5});
+}
+
+func zeroFrequency() {
+    withLocus(db("x"), "L", 100, {"1": 0.0});
+}
+
+func frequencyAboveOne() {
+    withLocus(db("x"), "L", 100, {"1": 1.5});
+}
+
+func testWithLocusValidatesItsInput() {
+    testing.assertThrows("emptyLocusName", "forensicgenetics");
+    testing.assertThrows("negativeSampleSize", "forensicgenetics");
+    testing.assertThrows("zeroFrequency", "forensicgenetics");
+    testing.assertThrows("frequencyAboveOne", "forensicgenetics");
+}
+
+func testWithLocusReplacesAnExistingLocus() {
+    def fdb as FrequencyDb init withLocus(fixture(), "TH01", 80, {"6": 0.6, "7": 0.4});
+    testing.assertEqual(sampleSize($fdb, "TH01"), 80);
+    near(alleleFrequency($fdb, "TH01", "6"), 0.6);
+    # The original is untouched.
+    testing.assertEqual(sampleSize(fixture(), "TH01"), 50);
+}
+
+func unknownSampleSizeUnlistedAllele() {
+    alleleFrequency(withLocus(db("x"), "L", 0, {"1": 0.5}), "L", "2");
+}
+
+func testUnknownSampleSizeHasNoFloor() {
+    # N = 0: no 5/2N floor, so a listed allele keeps its frequency and an
+    # unlisted one has no frequency at all.
+    def fdb as FrequencyDb init withLocus(db("x"), "L", 0, {"1": 0.5});
+    near(minFrequency($fdb, "L"), 0.0);
+    near(alleleFrequency($fdb, "L", "1"), 0.5);
+    testing.assertThrows("unknownSampleSizeUnlistedAllele", "forensicgenetics");
+}
+
+func sampleSizeOfMissingLocus() {
+    sampleSize(fixture(), "FGA");
+}
+
+func genotypeAtUntypedLocus() {
+    genotypeAt(suspect(), "FGA");
+}
+
+func restrictToUntypedLocus() {
+    restrict(suspect(), ["D3S1358", "FGA"]);
+}
+
+func testMissingLociAreErrors() {
+    testing.assertThrows("sampleSizeOfMissingLocus", "forensicgenetics");
+    testing.assertThrows("genotypeAtUntypedLocus", "forensicgenetics");
+    testing.assertThrows("restrictToUntypedLocus", "forensicgenetics");
+}
+
+func log10OfEmptyProfile() {
+    log10RandomMatchProbability(fixture(), profile("X", []), THETA_NONE);
+}
+
+func testLog10RmpRefusesAnEmptyProfile() {
+    testing.assertThrows("log10OfEmptyProfile", "forensicgenetics");
+}
+
+func cpiOfEmptyMixture() {
+    cpi(fixture(), mixture("empty", {}));
+}
+
+func inclusionWithNoAlleles() {
+    inclusionProbability(fixture(), "D3S1358", []);
+}
+
+func testMixtureStatisticsNeedData() {
+    testing.assertThrows("cpiOfEmptyMixture", "forensicgenetics");
+    testing.assertThrows("inclusionWithNoAlleles", "forensicgenetics");
+}
+
+func acrossNoDatabases() {
+    randomMatchProbabilityAcross([], [], homozygote(), THETA_NONE);
+}
+
+func acrossNegativeWeight() {
+    # Sums to 1.0, so only the sign check can reject it.
+    randomMatchProbabilityAcross([popA(), popB()], [-0.5, 1.5], homozygote(), THETA_NONE);
+}
+
+func testAcrossValidatesItsInput() {
+    testing.assertThrows("acrossNoDatabases", "forensicgenetics");
+    testing.assertThrows("acrossNegativeWeight", "forensicgenetics");
+}
+
+func poolWithoutSampleSizes() {
+    combineFrequencies(
+        [
+            withLocus(db("A"), "TH01", 0, {"6": 0.5}),
+            withLocus(db("B"), "TH01", 0, {"6": 0.5})
+        ],
+        "unweighted");
+}
+
+func testPoolingNeedsASampleSize() {
+    testing.assertThrows("poolWithoutSampleSizes", "forensicgenetics");
+}
+
+func emptyLocusGenotype() {
+    genotype("", "6", "7");
+}
+
+func testGenotypeRejectsEmptyLocus() {
+    testing.assertThrows("emptyLocusGenotype", "forensicgenetics");
+}
+
+func testNonNumericOrderIsLexicographicEitherWay() {
+    testing.assertEqual(genotype("AMEL", "X", "Y"), genotype("AMEL", "Y", "X"));
+    testing.assertTrue(isHomozygous(genotype("AMEL", "X", "X")));
 }

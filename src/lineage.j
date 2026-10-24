@@ -1,35 +1,28 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Lineage markers: mitochondrial DNA and Y-STR haplotypes.
+ * mtDNA and Y-STR haplotypes and their counting estimates.
  *
- * mtDNA and the Y chromosome are haploid, non-recombining and uniparentally
- * inherited, so the entire marker set is inherited as one **haplotype**. There
- * is no Hardy-Weinberg equilibrium to invoke and no product rule across loci:
- * the match probability is a direct **counting** estimate from a reference
- * database - the haplotype was seen `k` times among `N` profiles.
+ * A lineage haplotype is inherited as one unit, so there is no product rule:
+ * the match probability is a count, `k` sightings among `N` database profiles.
+ * `lineageMatchProbability` returns the Clopper-Pearson one-sided 95% upper
+ * bound on `k/N`, the figure to quote.
  *
- * That counting estimate is unstable for rare haplotypes (a haplotype seen
- * once, or never, in a database of a few thousand), so the conservative
- * figure to quote is the **Clopper-Pearson exact-binomial upper bound** rather
- * than the raw `k/N`. `lineageMatchProbability` returns that bound.
- *
- * The module is deliberately **database-independent**: it supplies the
- * estimators and the haplotype types, and the caller feeds in `k` and `N` from
- * whichever database they queried (EMPOP, YHRD, an in-house set). No reference
- * data is bundled, and neither is the rCRS - `align` takes the reference
- * region as an argument.
+ * The caller supplies `k` and `N` from the database searched (EMPOP, YHRD, an
+ * in-house set). No reference data is bundled, and no rCRS: `align` takes the
+ * reference region as an argument. This module imports nothing from the rest
+ * of the deck.
  * @module lineage
  * @see https://empop.online/ - the EMPOP mtDNA database
  * @see https://yhrd.org/ - the Y-STR Haplotype Reference Database
  * @example
- * import "@jennifer/forensicgenetics/lineage.j" as lineage;
+ * import "@deckyard/forensicgenetics/lineage.j" as lineage;
  *
  * # A haplotype seen 2 times in a database of 5000.
- * def p as float init lineage.lineageMatchProbability(2, 5000);   # ~0.00133
- * def lr as float init lineage.lineageLikelihoodRatio(2, 5000);   # ~751
+ * def p as float init lineage.lineageMatchProbability(2, 5000);   # ~0.00126
+ * def lr as float init lineage.lineageLikelihoodRatio(2, 5000);   # ~795
  *
  * def h as lineage.MtHaplotype init lineage.mtHaplotype("Q1", ["16024-16365"],
  *     "16189C 16223T 16278T");
@@ -42,8 +35,7 @@ use strings;
 use convert;
 
 /**
- * The default confidence level for a conservative lineage estimate: 0.95,
- * i.e. a one-sided 95% upper bound.
+ * The one-sided confidence level `lineageMatchProbability` uses.
  */
 export def const DEFAULT_CONFIDENCE as float init 0.95;
 
@@ -54,14 +46,12 @@ export def const DEFAULT_CONFIDENCE as float init 0.95;
 def const MAX_POSITION as int init 999999;
 
 /**
- * One difference from the reference sequence, in rCRS nomenclature.
+ * One difference from the reference, in rCRS nomenclature.
  *
- * A substitution at 16189 to C is `{position: 16189, insertion: 0, base: "C",
- * kind: "sub"}` and prints `16189C`. The first base inserted after 315 is
- * `{position: 315, insertion: 1, base: "C", kind: "ins"}` and prints `315.1C`.
- * A deletion of 249 is `{position: 249, insertion: 0, base: "", kind: "del"}`
- * and prints `249d`.
- * @field position {int} the reference position
+ * `16189C` is `{position: 16189, insertion: 0, base: "C", kind: "sub"}`,
+ * `315.1C` is `{position: 315, insertion: 1, base: "C", kind: "ins"}`, and
+ * `249d` is `{position: 249, insertion: 0, base: "", kind: "del"}`.
+ * @field position {int} the 1-based reference position
  * @field insertion {int} 0 for a substitution or deletion; 1, 2, ... for the
  *   n-th base inserted after `position`
  * @field base {string} the observed base; "" for a deletion
@@ -75,13 +65,9 @@ export def struct Difference {
 };
 
 /**
- * An mtDNA haplotype: the sequenced ranges plus the differences from the
- * reference within them.
- *
- * The ranges matter for comparison. Two haplotypes can only be compared
- * like-for-like over regions both were sequenced across, so a haplotype that
- * records only HVR-I is not "equal" to one covering the whole control region
- * merely because their listed differences coincide.
+ * An mtDNA haplotype: the sequenced ranges and the differences from the
+ * reference within them. `mtMatches` ignores the ranges; compare them with
+ * `mtRangesAgree`.
  * @field id {string} a caller-chosen label
  * @field ranges {list of string} the sequenced regions, e.g. ["16024-16365", "73-340"]
  * @field differences {list of Difference} the differences from the reference,
@@ -96,9 +82,8 @@ export def struct MtHaplotype {
 /**
  * A Y-STR haplotype: a repeat count per locus.
  *
- * A multi-copy locus (DYS385a/b, and DYS389I/II when reported together) holds
- * its alleles comma-separated - `"11,14"`. Copy counts must agree between two
- * haplotypes being compared at that locus.
+ * A multi-copy locus (DYS385a/b, DYS389I/II reported together) holds its
+ * alleles comma- or slash-separated, `"11,14"` or `"11/14"`.
  * @field id {string} a caller-chosen label
  * @field loci {map of string to string} locus name -> allele designation(s)
  */
@@ -126,11 +111,10 @@ func checkCount(k as int, n as int) {
 }
 
 /**
- * The raw counting estimate of a haplotype's frequency: `k / N`.
+ * The point estimate of a haplotype's frequency, `k / N`.
  *
- * The point estimate, not the figure to quote in a report - a haplotype seen
- * zero times gets 0.0 here, which no reference database can actually support.
- * Use `lineageMatchProbability` for the conservative estimate.
+ * Not the figure to report: it is 0.0 at `k == 0`. Quote
+ * `lineageMatchProbability`.
  * @param k {int} how many times the haplotype was seen in the database
  * @param n {int} the database size
  * @return {float} the point estimate k/N
@@ -142,18 +126,12 @@ export func haplotypeFrequency(k as int, n as int) {
 }
 
 /**
- * The Clopper-Pearson exact-binomial **one-sided upper bound** on a haplotype
+ * The Clopper-Pearson exact-binomial one-sided upper bound on a haplotype
  * frequency.
  *
- * The conservative counting estimate: the largest population frequency that
- * would still make `k` sightings in `N` profiles unsurprising at the given
- * confidence. It is well defined at `k == 0`, where it reduces to the familiar
- * `1 - alpha^(1/N)` (the "rule of three" at 95%), and it is exactly 1.0 at
- * `k == N`.
- *
- * Computed as the upper end of a two-sided Clopper-Pearson interval at level
- * `2c - 1`, which is the standard identity between a two-sided interval and a
- * one-sided bound.
+ * At `k == 0` it is `1 - alpha^(1/N)`, with `alpha = 1 - confidence` (the
+ * "rule of three" at 95%); at `k == N` it is exactly 1.0. Computed as the upper
+ * end of the two-sided Clopper-Pearson interval at level `2c - 1`.
  * @param k {int} how many times the haplotype was seen in the database
  * @param n {int} the database size
  * @param confidence {float} the one-sided confidence level, in (0.5, 1)
@@ -174,10 +152,8 @@ export func haplotypeUpperBound(k as int, n as int, confidence as float) {
 }
 
 /**
- * The conservative lineage match probability: the 95% upper bound on `k / N`.
- *
- * This is the number a lineage-marker report quotes. It is `haplotypeUpperBound`
- * at `DEFAULT_CONFIDENCE`.
+ * The lineage match probability to report: `haplotypeUpperBound` at
+ * `DEFAULT_CONFIDENCE` (0.95).
  * @param k {int} how many times the haplotype was seen in the database
  * @param n {int} the database size
  * @return {float} the conservative match probability
@@ -188,15 +164,14 @@ export func lineageMatchProbability(k as int, n as int) {
 }
 
 /**
- * The lineage likelihood ratio: the reciprocal of `lineageMatchProbability`.
+ * The lineage likelihood ratio, `1 / lineageMatchProbability`.
  *
- * The weight of evidence for "the sample came from this maternal (mtDNA) or
- * paternal (Y) lineage" against "it came from an unrelated lineage".
+ * "The sample came from this maternal (mtDNA) or paternal (Y) lineage" against
+ * "it came from an unrelated lineage". It is 1.0 at `k == N`.
  * @param k {int} how many times the haplotype was seen in the database
  * @param n {int} the database size
  * @return {float} the likelihood ratio
- * @throws {Error} kind "lineage" on a bad count pair, or if the bound is 1.0
- *   (`k == N`), which carries no weight
+ * @throws {Error} kind "lineage" on a non-positive N or a k outside [0, N]
  */
 export func lineageLikelihoodRatio(k as int, n as int) {
     def p as float init lineageMatchProbability($k, $n);
@@ -222,9 +197,10 @@ func isBase(ch as string) {
 /**
  * Parse one difference designation in rCRS nomenclature.
  *
- * Accepts `16189C`, the redundant `A263G` form (the reference base is dropped),
- * the insertion form `315.1C`, and the deletion forms `249d`, `249D`, `249DEL`
- * and `249-`.
+ * Accepts `16189C`, `A263G` (the reference base is dropped), `315.1C`, and the
+ * deletions `249d`, `249D`, `249DEL` and `249-`. Case-insensitive; surrounding
+ * whitespace is ignored. The base may be any IUPAC code. The position must be
+ * in [1, 999999] and an insertion index in [1, 9999].
  * @param text {string} the designation
  * @return {Difference} the parsed difference
  * @throws {Error} kind "lineage" if the designation does not parse
@@ -296,8 +272,8 @@ export func parseDifference(text as string) {
 }
 
 /**
- * Render a difference back into rCRS nomenclature.
- * @param d {Difference} the difference
+ * A difference in rCRS nomenclature.
+ * @param d {Difference} the difference to render
  * @return {string} its designation, e.g. "16189C", "315.1C" or "249d"
  * @throws {Error} kind "lineage" on an unknown `kind`
  */
@@ -311,14 +287,11 @@ export func formatDifference(d as Difference) {
 }
 
 /**
- * An mtDNA haplotype from a space-separated list of differences.
- *
- * Tabs and newlines separate as well as spaces, so a designation string copied
- * out of a report reads directly.
+ * An mtDNA haplotype from whitespace-separated designations.
  * @param id {string} a label for the haplotype
  * @param ranges {list of string} the sequenced regions, e.g. ["16024-16365"]
  * @param text {string} the differences, e.g. "16189C 16223T 315.1C"
- * @return {MtHaplotype} the haplotype, differences sorted by position
+ * @return {MtHaplotype} the haplotype, sorted by position then insertion index
  * @throws {Error} kind "lineage" if a designation does not parse
  */
 export func mtHaplotype(id as string, ranges as list of string, text as string) {
@@ -354,7 +327,7 @@ func sortDifferences(ds as list of Difference) {
 
 /**
  * The differences of a haplotype as designation strings.
- * @param h {MtHaplotype} the haplotype
+ * @param h {MtHaplotype} the haplotype to render
  * @return {list of string} the designations in position order
  */
 export func mtDesignations(h as MtHaplotype) {
@@ -366,12 +339,9 @@ export func mtDesignations(h as MtHaplotype) {
 }
 
 /**
- * Whether two mtDNA haplotypes carry exactly the same differences.
+ * Whether two mtDNA haplotypes carry the same differences.
  *
- * This compares difference lists only. It does **not** check that the two were
- * sequenced over the same regions - test that separately with `mtRangesAgree`,
- * because comparing an HVR-I-only haplotype against a whole-control-region one
- * is not a like-for-like match.
+ * Compares differences only, not sequenced ranges: check `mtRangesAgree` too.
  * @param a {MtHaplotype} one haplotype
  * @param b {MtHaplotype} the other
  * @return {bool} true if the difference sets are identical
@@ -381,12 +351,10 @@ export func mtMatches(a as MtHaplotype, b as MtHaplotype) {
 }
 
 /**
- * The number of differences that separate two mtDNA haplotypes.
+ * The size of the symmetric difference of two haplotypes' designation sets.
  *
- * The size of the symmetric difference of the two designation sets: a position
- * one carries and the other does not counts once, and a position both carry
- * with different bases counts twice (each haplotype has a designation the other
- * lacks).
+ * A designation only one carries counts once; a position both carry with
+ * different bases counts twice.
  * @param a {MtHaplotype} one haplotype
  * @param b {MtHaplotype} the other
  * @return {int} the number of differing designations
@@ -454,13 +422,12 @@ def const DIR_UP as int init 1;
 def const DIR_LEFT as int init 2;
 
 /**
- * The longest region `align` will accept, in bases.
+ * The longest sequence `align` accepts, in bases.
  *
- * Alignment is O(nm) in time, so the cost grows with the square of the region:
- * a 1000-base region is a second or so, and the whole 16.5 kb mitochondrial
- * genome would be well over half an hour. The cap turns that into an immediate,
- * catchable refusal rather than a process that appears to hang. It is far above
- * the control region (~1.1 kb), which is what this nomenclature is for.
+ * Banded alignment of near-identical sequences is roughly linear (about 1.2 s
+ * at this cap), but divergent sequences widen the band towards the full
+ * O(nm) matrix. The cap makes a whole-genome call fail at once instead of
+ * appearing to hang. The control region is about 1.1 kb.
  */
 export def const MAX_ALIGN_LENGTH as int init 5000;
 
@@ -680,29 +647,23 @@ func shiftGapsRight(a as string, b as string) {
 }
 
 /**
- * Align a sequenced region against its reference and render the result as rCRS
- * differences.
+ * The rCRS differences of a sequenced region against its reference.
  *
- * This is the substantive step that turns a raw sequence into standard
- * nomenclature: a global Needleman-Wunsch alignment (match +1, mismatch -1,
- * gap -2), with indels slid to the 3' end of any homopolymer run so an extra
- * base in the 311-315 C-stretch reads as `315.1C`.
+ * A global Needleman-Wunsch alignment (match +1, mismatch -1, gap -2; ties
+ * prefer the diagonal), with indels slid to the 3' end of any homopolymer run,
+ * so an extra base in the 311-315 C-stretch reads as `315.1C`. Whitespace in
+ * either sequence is ignored and bases are upper-cased.
  *
- * No reference is bundled - pass the rCRS (NC_012920.1) region you sequenced,
- * with `refStart` its first position, so the returned differences are numbered
- * in rCRS coordinates.
- *
- * **Caveat**: this renders a plain optimal alignment. EMPOP's phylogenetic
- * alignment rules, which shift indels to the position preferred by the mtDNA
- * phylogeny rather than merely 3', are not applied - so a haplotype with a
- * complex indel may differ from an EMPOP-conformant designation and should be
- * checked before it is quoted.
+ * Pass the rCRS (NC_012920.1) region you sequenced, with `refStart` the 1-based
+ * position of its first base. EMPOP's phylogenetic alignment rules are not
+ * applied, so a complex indel may differ from the EMPOP designation.
  * @param reference {string} the reference sequence for the region
  * @param sample {string} the sequenced sample over the same region
  * @param refStart {int} the rCRS position of the reference's first base
  * @return {list of Difference} the differences, in position order
  * @throws {Error} kind "lineage" on an empty sequence, a non-positive
- *   `refStart`, or a non-nucleotide character
+ *   `refStart`, a non-IUPAC character, or a sequence longer than
+ *   `MAX_ALIGN_LENGTH`
  */
 export func align(reference as string, sample as string, refStart as int) {
     def r as string init clean($reference);
@@ -752,11 +713,8 @@ func renderDifferences(gr as list of string, gs as list of string, refStart as i
 }
 
 /**
- * An mtDNA haplotype built by aligning a sequence against its reference.
- *
- * The convenience pairing of `align` with `mtHaplotype`: the sequenced range is
- * recorded from `refStart` and the reference length, so the result carries the
- * coverage its differences are meaningful over.
+ * An mtDNA haplotype from `align`, with the range
+ * `"<refStart>-<refStart + reference length - 1>"`.
  * @param id {string} a label for the haplotype
  * @param reference {string} the reference sequence for the region
  * @param sample {string} the sequenced sample
@@ -781,9 +739,10 @@ export func mtHaplotypeFrom(id as string, reference as string, sample as string,
  * A Y-STR haplotype.
  * @param id {string} a label for the haplotype
  * @param loci {map of string to string} locus name -> allele designation(s),
- *   multi-copy loci comma-separated ("11,14")
+ *   multi-copy loci as "11,14" or "11/14"
  * @return {YHaplotype} the haplotype
- * @throws {Error} kind "lineage" on an empty locus name or allele designation
+ * @throws {Error} kind "lineage" on an empty locus name, a locus with no allele,
+ *   or an allele that is not a repeat count
  */
 export func yHaplotype(id as string, loci as map of string to string) {
     for (def locus in $loci) {
@@ -816,7 +775,7 @@ func alleleList(text as string) {
 
 /**
  * The loci a Y haplotype records, in insertion order.
- * @param h {YHaplotype} the haplotype
+ * @param h {YHaplotype} the haplotype to read
  * @return {list of string} the locus names
  */
 export func yLoci(h as YHaplotype) {
@@ -840,11 +799,13 @@ export func ySharedLoci(a as YHaplotype, b as YHaplotype) {
 }
 
 /**
- * Whether two Y haplotypes agree exactly at every shared locus.
+ * Whether two Y haplotypes agree exactly at every shared locus. Multi-copy
+ * loci compare as sorted lists, so "11,14" equals "14,11".
  * @param a {YHaplotype} one haplotype
  * @param b {YHaplotype} the other
- * @return {bool} true if every shared locus carries the same allele set
- * @throws {Error} kind "lineage" if the two share no locus
+ * @return {bool} true if every shared locus carries the same alleles
+ * @throws {Error} kind "lineage" if the two share no locus, or an allele is
+ *   not a repeat count
  */
 export func yMatches(a as YHaplotype, b as YHaplotype) {
     def shared as list of string init ySharedLoci($a, $b);
@@ -891,15 +852,9 @@ func repeatCount(allele as string) {
 }
 
 /**
- * The stepwise distance between two Y haplotypes.
- *
- * The sum, over shared loci, of the absolute repeat-count differences - the
- * distance a single-step mutation model counts in. Two haplotypes at distance
- * 1 differ by one repeat at one locus.
- *
- * A multi-copy locus is compared after sorting both sides, so `"11,14"` against
- * `"14,11"` is distance 0. Differing copy counts at a shared locus are an error
- * rather than a guess.
+ * The stepwise distance between two Y haplotypes: the sum over shared loci of
+ * the absolute repeat-count differences. Multi-copy loci are sorted before
+ * comparing, so `"11,14"` against `"14,11"` is 0.
  * @param a {YHaplotype} one haplotype
  * @param b {YHaplotype} the other
  * @return {float} the total stepwise distance
@@ -929,14 +884,13 @@ export func yStepDistance(a as YHaplotype, b as YHaplotype) {
 }
 
 /**
- * Whether two Y haplotypes are within `steps` repeat units of each other.
+ * Whether `yStepDistance` is at most `steps`.
  *
- * `yMatchesWithin(a, b, 1.0)` is the single-step comparison used to keep a
- * paternal lineage together across one mutation; `yMatchesWithin(a, b, 0.0)` is
- * `yMatches` over numeric loci.
+ * `steps = 1.0` keeps a paternal lineage together across one single-step
+ * mutation; `steps = 0.0` is `yMatches`.
  * @param a {YHaplotype} one haplotype
  * @param b {YHaplotype} the other
- * @param steps {float} the largest total stepwise distance still counted as a match
+ * @param steps {float} the largest distance still counted as a match
  * @return {bool} true if the stepwise distance is at most `steps`
  * @throws {Error} kind "lineage" as for `yStepDistance`, or on a negative `steps`
  */

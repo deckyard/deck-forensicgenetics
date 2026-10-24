@@ -1,7 +1,5 @@
 # Limitations
 
-Read this before quoting a number. Some of it will change what you do.
-
 ## Not a validated forensic tool
 
 The deck implements published estimators and is tested against them, but it has
@@ -42,203 +40,146 @@ two statements above.
 
 ## Data
 
-### The bundled frequency table is synthetic
+### The example frequency table is synthetic
 
-`testdata/frequencies.xml` contains **made-up numbers**, generated only to
-exercise the reader and the examples. The file says so in its own header
-comment. Every figure printed by an example is therefore an illustration of the
-arithmetic, not a statement about any real population.
+`examples/lib/exampledb.j` builds a table of made-up numbers. Every figure an
+example prints illustrates the arithmetic, not a real population. Use a real
+table, for example from [STRidER](https://strider.online/), for anything you
+intend to rely on.
 
-The examples build their table in `examples/lib/exampledb.j`; every number in
-it is made up. Download a real table from [STRidER](https://strider.online/)
-before computing anything you intend to rely on.
+### Pooling populations is not an uncertain population
 
-### Pooling populations is not the same as an uncertain population
-
-`combineFrequencies` merges tables into one. That merged table violates
-Hardy-Weinberg by construction whenever the inputs' frequencies differ - the
-Wahlund effect - so the match probability computed from it is biased
-*downwards*, which overstates the evidence.
-
-For "the donor was German or Austrian", use `randomMatchProbabilityAcross`,
-which averages the match probability computed within each population rather
-than averaging the frequencies. On the worked example in the test suite the two
-differ by a third at a single locus, and the gap compounds across a profile.
-
-Reserve `combineFrequencies` for the case where the merged group genuinely is
-the reference population.
+`combineFrequencies` merges tables into one. When the inputs' frequencies
+differ, the merged table violates Hardy-Weinberg (the Wahlund effect), and the
+match probability computed from it is biased downwards, overstating the
+evidence. For "the donor was German or Austrian" use
+`randomMatchProbabilityAcross`. In the test suite's example the two differ by a
+third at one locus, and the gap compounds across a profile. See
+[Reference frequency data](../concepts/frequency-data.md#when-the-population-is-uncertain).
 
 ### Reading a published table is a separate deck
 
-The core reads no published format. [`@mplx/strider`](https://github.com/mplx/deck-strider-frequency-converter)
-converts STRidER-style XML, and carries its own limitations - chief among them
-that it has not been validated against a real STRidER export.
+The core reads no file format.
+[`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
+converts STRidER-style XML and has its own limitations, chief among them that
+it has not been validated against a real STRidER export.
 
 ### No reference sequence is bundled
 
 `lineage.align` takes the rCRS (NC_012920.1) region you sequenced as an
-argument rather than shipping a copy. This also keeps the module
-database-independent, which is deliberate.
+argument.
 
 ## Statistical scope
 
-### Theta is not applied in kinship or pedigree calculations
+### No theta in kinship or pedigree calculations
 
 [`kinship.j`](../casework/kinship.md) and
-[`pedigree.j`](../casework/pedigrees.md) use the plain product rule, `θ = 0`.
-
-The sub-population correction does not extend to the IBD-1 term - the joint
-probability of two related people's genotypes under co-ancestry needs the full
-recursive sampling formula, not a swapped-in allele frequency. Applying θ to
-some terms and not others would produce a number that answers neither question,
-so those modules are uniformly theta-free.
-
-θ **is** applied where it is exact: the single-source match probability. See
+[`pedigree.j`](../casework/pedigrees.md) use `θ = 0`. The sub-population
+correction does not extend to the IBD-1 term by substituting an allele
+frequency; it needs the full recursive sampling formula. Applying θ to some
+terms and not others would answer neither question. θ is applied where it is
+exact, in the single-source match probability. See
 [Theta](../concepts/theta.md).
 
 ### Kinship is for outbred pairs
 
-The three IBD coefficients describe **non-inbred** individuals. An inbred
-pedigree needs the nine condensed Jacquard coefficients, which the pairwise
-form does not carry.
+The three IBD coefficients describe non-inbred individuals. An inbred pedigree
+needs the nine condensed Jacquard coefficients.
 
 ### Peeling handles simple pedigrees only
 
-A consanguineous mating, or any other loop in the individual/family graph,
-makes it cyclic. `pedigree.validate` **rejects** such a pedigree rather than
-mis-summing it. Loops need cutset conditioning, which is not implemented.
+A consanguineous mating, or any other loop in the individual/family graph, is
+rejected by `pedigree.validate`. Loops need cutset conditioning, which is not
+implemented. A half-sibling pedigree is not a loop.
 
-A half-sibling pedigree - one father, two mothers - is not a loop and is
-handled normally.
+### Mixtures stop at CPI / CPE
 
-### Mixture support stops at CPI / CPE
-
-[Mixtures](../casework/mixtures.md) gives the combined probability of inclusion
-and exclusion, which needs no assumption about contributor count but is
-correspondingly weak: it does not use the suspect's profile, ignores peak
-heights, and degrades badly under allele dropout.
-
-Full deconvolution - multi-contributor models with drop-in, dropout and peak
-heights, the EuroForMix space - is a larger, later effort layered on this base.
-It is not here.
+CPI / CPE needs no contributor count but is weak: it does not use the
+suspect's profile, ignores peak heights, and fails under allele dropout. Full
+deconvolution (multi-contributor models with drop-in, dropout and peak
+heights, as in EuroForMix) is not implemented. See
+[Mixtures](../casework/mixtures.md).
 
 ### EMPOP's phylogenetic alignment rules are not applied
 
-`lineage.align` renders a plain optimal alignment with indels slid 3'. EMPOP
-shifts indels to the position the mtDNA phylogeny prefers, which can differ for
-a complex indel. Check such a designation against EMPOP before quoting it.
+`lineage.align` returns a plain optimal alignment with indels slid 3'. EMPOP
+places indels where the mtDNA phylogeny prefers, which can differ for a
+complex indel. Check such a designation against EMPOP before quoting it.
 
 ### The default mutation rates are placeholders
 
-`DEFAULT_MUTATION` is `rate = 0.002`, `decay = 0.1` - the right order of
-magnitude for paternal autosomal STR mutation, not a published figure.
-
-This matters more than it looks. When a mutation model rescues a trio from a
-single inconsistency, the resulting CPI is directly proportional to the rate
-assumed at that locus, and observed per-locus rates vary over roughly an order
-of magnitude. Substitute published rates with
-[`withLocusRate`](../reference/kinship.md).
+`DEFAULT_MUTATION` is `rate = 0.002`, `decay = 0.1`: the right order of
+magnitude for paternal autosomal STR mutation, not a published figure. When a
+mutation model rescues a trio from a single inconsistency, the CPI is
+proportional to the rate at that locus, and observed per-locus rates vary
+about tenfold. Set published rates with `kinship.withLocusRate`.
 
 ## Performance
 
 ### Alignment cost grows with the region, and with divergence
 
-`align` computes only a band around the diagonal, so for near-identical
-sequences - a haplotype against its own reference, which is the case it exists
-for - the cost is roughly linear in the region length rather than quadratic.
-Measured: 342 bp in 0.08 s, the ~1.1 kb control region in 0.29 s, 1600 bp in
-0.39 s, all inside 50 MB. Time tracks length closely - 14.6x the region length
-for 15.7x the time, out to the 5000-base cap - which is the band doing its job.
+`align` computes a band around the diagonal, so for near-identical sequences
+(a haplotype against its own reference) the cost is roughly linear in the
+region length. Measured: 342 bp in 0.08 s, the ~1.1 kb control region in
+0.29 s, 1600 bp in 0.39 s, all within 50 MB; 14.6 times the length took 15.7
+times as long, up to the cap. Divergent sequences widen the band towards the
+full quadratic matrix. `align` refuses a region longer than
+`lineage.MAX_ALIGN_LENGTH` (5000 bases); at that cap a near-identical pair
+takes about 1.2 s.
 
-Two sequences that genuinely diverge force the band wider, up to the full
-matrix, and then the cost is the quadratic one. `align` refuses a region longer
-than `lineage.MAX_ALIGN_LENGTH` (5000 bases) rather than appearing to hang; at
-that cap a near-identical pair takes about 1.2 s.
-
-Everything else in the deck is fast. An eight-locus, four-typed-person pedigree
-LR runs in about a tenth of a second, and peeling memory is flat regardless of
-pedigree size.
+An eight-locus pedigree LR with four typed people takes about 0.1 s, and
+peeling memory does not grow with pedigree size.
 
 ### Peeling slows as observed alleles accumulate
 
-Cost is driven by the number of **distinct alleles the typed members show at a
-locus**, growing steeply in the resulting genotype count. Measured, for one
-locus: 4 alleles 11 ms, 8 alleles 90 ms, 12 alleles 0.6 s, 16 alleles 1.9 s,
-20 alleles 5.4 s. A large reference family at a highly polymorphic locus can
-therefore take seconds per locus. Allele lumping already caps this at what is
-actually observed; beyond that, the panel is the thing to trim.
+Cost grows steeply with the number of distinct alleles the typed members show
+at a locus. Measured, one locus: 4 alleles 11 ms, 8 alleles 90 ms, 12 alleles
+0.6 s, 16 alleles 1.9 s, 20 alleles 5.4 s. A large family at a highly
+polymorphic locus can take seconds per locus. Lumping already limits this to
+the observed alleles; beyond that, trim the panel.
 
 ### Building a database or profile one entry at a time is quadratic
 
-The copy-returning builders take a copy of the whole container before writing
-into it, so calling one in a loop re-copies everything accumulated so far:
-`withLocus` over `n` loci costs `1 + 2 + ... + n` entry copies. Measured, with
-the allele count held fixed at 10 so only the locus count varies: 25 loci in
-5.9 ms, 100 in 78 ms, 400 in 1077 ms - each doubling costs about four times as
-much.
+The copy-returning builders copy the whole container before writing, so a loop
+of `withLocus` over `n` loci costs `1 + 2 + ... + n` entry copies. Measured,
+10 alleles per locus: 25 loci 5.9 ms, 100 loci 78 ms, 400 loci 1077 ms. A real
+STR panel of 15 to 45 loci takes tens of milliseconds, and a 44-marker
+reference table converts in about 16-21 ms.
 
-At the size a real STR panel has this does not matter. Fifteen to forty-five
-loci is tens of milliseconds, and converting a full 44-marker reference table
-lands around 16-21 ms.
-
-`profile(id, genotypes)` takes the whole list and accumulates once, so build a
-profile that way rather than folding `withGenotype` over a list. There is no
-bulk counterpart for `FrequencyDb` yet: `withLocus` is the only public way to
-add a locus, and constructing `FrequencyDb` and `LocusFrequencies` directly to
-avoid it would skip the validation that catches a percentage-scaled table
-before it produces genotype probabilities above 1. That is not a trade worth
-making at this scale.
-
-`combineFrequencies` used to pay this internally and no longer does.
+`profile(id, genotypes)` builds in one pass; prefer it to folding
+`withGenotype` over a list. `FrequencyDb` has no bulk builder: constructing the
+structs directly would skip the validation that rejects a misread table, which
+is not worth the saving at this size.
 
 ### Iterating a list of large values copies each element
 
-`for (def d in $dbs)` binds a fresh copy of each element on every pass, and
-copying a `FrequencyDb` copies its whole locus map. Inside a loop over loci
-that is quadratic, which is what `combineFrequencies` was doing; indexing the
-list positionally reads the element in place and is linear. The same applies to
-any list whose elements carry a map or a long list - it is the container copy,
-not the loop, that costs.
-
-Rotating two working buffers by assignment - `spare = prev; prev = cur;
-cur = spare` - copies for the same reason, once per rotation. Holding both in a
-two-element list and alternating an index avoids it entirely; that is what
-`align` does with its two score rows, and what keeps a banded alignment linear
-in the region length instead of quadratic.
-
-The same trap catches `lists.push` and `lists.pop`, which return a fresh list
-rather than mutating: `$xs[] = item` appends in place, and a stack or queue is
-better walked with an index than rebuilt on every pass. The two pedigree graph
-walks do it that way.
+`for (def d in $dbs)` binds a copy of each element, and copying a `FrequencyDb`
+copies its locus map; inside a loop over loci that is quadratic. Indexing the
+list reads the element in place. The same holds for rotating buffers by
+assignment and for `lists.push` / `lists.pop`, which return new lists. The
+deck's own code indexes instead (`combineFrequencies`, `align`'s two score
+rows, the pedigree graph walks).
 
 ### Building a large pedigree is quadratic
 
-`withFounder` and `withChild` return copies, as every builder in this deck does,
-so assembling an `n`-member pedigree copies the member map `n` times. That is
-invisible for the tens of members a real case has and noticeable in the
-hundreds. The likelihood functions themselves are unaffected.
+`withFounder` and `withChild` return copies, so an `n`-member pedigree copies
+the member map `n` times: unnoticeable at tens of members, noticeable at
+hundreds. The likelihood functions are unaffected.
 
 ### Long panels underflow
 
-`randomMatchProbability` and `pedigreeLikelihood` return ordinary products and
-will underflow on a very long panel. Use `log10RandomMatchProbability`,
-`log10PedigreeLikelihood`, or `pedigreeLR`, which takes the ratio locus by
-locus and stays in range.
+`randomMatchProbability` and `pedigreeLikelihood` return plain products. Use
+`log10RandomMatchProbability`, `log10PedigreeLikelihood`, or `pedigreeLR`,
+which takes the ratio locus by locus.
 
 ## Reporting
 
-Numbers from this deck are conditional on assumptions the deck cannot state for
-you. Whatever you write down, write down alongside it:
+A number from this deck depends on assumptions it cannot state for you. Report
+with it:
 
-- which reference population, and where the table came from
-- which θ
-- which loci contributed - especially if a profile was narrowed
-- what the alternative hypothesis actually is (unrelated? a brother? an unknown
-  man?)
-- for a probability of paternity, which prior
-- for a lineage marker, which database and how large it was
-
-## Related
-
-- [Formulae and sources](formulae.md) - what is implemented, and from where
-- [Testing and contributing](testing.md) - how the estimators are checked
+- the reference population and the table's source
+- θ
+- the loci used, especially if a profile was narrowed
+- the alternative hypothesis (unrelated, a brother, an unknown man)
+- for a probability of paternity, the prior
+- for a lineage marker, the database and its size

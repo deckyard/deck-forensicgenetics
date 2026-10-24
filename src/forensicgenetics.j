@@ -1,46 +1,35 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Forensic and statistical genetics over autosomal STR profiles.
+ * Autosomal STR profiles, reference allele frequencies and the single-source
+ * statistics built from them: NRC II genotype frequencies with theta, the
+ * random match probability (RMP) and its likelihood ratio, and CPI / CPE for a
+ * mixture.
  *
- * The entry module of the `forensicgenetics` deck. It works on **profiles** - an
- * unordered allele pair per autosomal STR locus - and on reference **allele
- * frequency** data, and combines them into the match statistics a report
- * quotes: single-locus Hardy-Weinberg genotype frequencies with the NRC II
- * theta (sub-population) correction, the random match probability across a
- * panel, the single-source likelihood ratio, and the combined probability of
- * inclusion / exclusion for a mixture.
+ * Alleles are strings: `"9.3"` and `"15.2"` are ordinary designations, and
+ * `"15"` and `"15.0"` are different keys. `alleleValue` converts one to a
+ * repeat count where arithmetic is meant (the mutation model in `kinship.j`).
  *
- * Alleles are **strings**, not numbers, because STR allele designations are
- * not integers: `"9.3"` at TH01 and `"15.2"` at D19S433 are ordinary alleles
- * and `"15"` and `"15.0"` must not silently become the same key. Use
- * `alleleValue` when repeat-count arithmetic is actually wanted (the mutation
- * model in `kinship.j` does).
+ * Every allele frequency is floored at the NRC II 5/(2N), using the locus's
+ * own N; that is why `FrequencyDb` stores a sample size per locus.
  *
- * Rare and unobserved alleles take the NRC II **5/2N floor**: an allele is
- * never scored rarer than 5/(2N) for the locus's own N, which is why a
- * `FrequencyDb` keeps a per-locus sample size rather than frequencies alone.
+ * The module reads no published format. Build a `FrequencyDb` with `db` and
+ * `withLocus`, or convert one with a reader deck (`@deckyard/strider` for
+ * STRidER XML). For a donor whose population is uncertain use
+ * `randomMatchProbabilityAcross`, not a table pooled with `combineFrequencies`,
+ * which biases the RMP downwards.
  *
- * The module is **vendor-independent**: it defines the generic `FrequencyDb`
- * and nothing else. It reads no published format and knows no data source.
- * Build a database with `db` + `withLocus`, or let a reader convert a
- * published table into one - the `@mplx/strider` deck does that for
- * STRidER exports. Which dataset you load (a country, a continent, the full
- * database) is a casework decision the caller owns, and when the donor's
- * population is uncertain `randomMatchProbabilityAcross` is the estimator for
- * it - not a table pooled with `combineFrequencies`, which biases the answer.
- *
- * Sibling modules: `kinship.j` (relationship LRs, paternity),
- * `pedigree.j` (general-pedigree likelihoods), `lineage.j` (mtDNA / Y-STR).
+ * Sibling modules: `kinship.j` (pairwise LRs, paternity), `pedigree.j`
+ * (whole-pedigree likelihoods), `lineage.j` (mtDNA and Y-STR).
  * @module forensicgenetics
  * @see https://strider.online/formulae - the STRidER formulae page these
  *   estimators follow
- * @see https://github.com/mplx/deck-strider-frequency-converter - the reader
+ * @see https://github.com/deckyard/deck-strider-frequency-converter - the reader
  *   deck that converts a STRidER export into a `FrequencyDb`
  * @example
- * import "@jennifer/forensicgenetics/" as forensics;
+ * import "@deckyard/forensicgenetics/" as forensics;
  *
  * def db as forensics.FrequencyDb init forensics.withLocus(
  *     forensics.db("example"), "D3S1358", 1034, {"15": 0.4, "16": 0.6});
@@ -61,10 +50,9 @@ use convert;
 /**
  * The NRC II theta for a broad, well-mixed population.
  *
- * Theta (also written Fst) is the co-ancestry coefficient: the probability
- * that two alleles drawn from the same sub-population are identical by descent
- * rather than by chance. Larger theta means a more conservative (larger) match
- * probability.
+ * Theta (Fst) is the co-ancestry coefficient: the probability that two alleles
+ * drawn from the same sub-population are identical by descent. A larger theta
+ * gives a larger, more conservative match probability.
  */
 export def const THETA_GENERAL as float init 0.01;
 
@@ -74,10 +62,9 @@ export def const THETA_GENERAL as float init 0.01;
 export def const THETA_ISOLATED as float init 0.03;
 
 /**
- * Theta zero - the plain product rule with no sub-population correction.
+ * Theta zero: the plain product rule with no sub-population correction.
  *
- * Correct only for an idealised panmictic population; quote it for
- * illustration, not for casework.
+ * Correct only for an idealised panmictic population; not for casework.
  */
 export def const THETA_NONE as float init 0.0;
 
@@ -87,19 +74,18 @@ export def const THETA_NONE as float init 0.0;
 export def const MIN_ALLELE_COUNT as float init 5.0;
 
 /**
- * The largest allele-frequency sum a locus may have and still be accepted.
+ * The largest allele-frequency sum `withLocus` accepts for one locus.
  *
- * Published tables round, so a locus rarely sums to exactly 1; this
- * accommodates rounding variation while still rejecting a table that was
- * plainly misread.
+ * Published tables round, so a locus rarely sums to exactly 1. A sum above
+ * this means the table was misread.
  */
 export def const MAX_FREQUENCY_SUM as float init 1.05;
 
 /**
  * One locus of a reference frequency table.
  * @field locus {string} the locus name, e.g. "D3S1358"
- * @field n {int} the number of individuals typed at this locus (so 2N alleles)
- * @field alleles {map of string to float} allele label -> observed frequency
+ * @field n {int} individuals typed at this locus (2N alleles); 0 if unknown
+ * @field alleles {map of string to float} allele label -> published frequency
  */
 export def struct LocusFrequencies {
     locus as string,
@@ -120,11 +106,11 @@ export def struct FrequencyDb {
 /**
  * An unordered pair of alleles at one autosomal locus.
  *
- * Build one with `genotype`, which orders the pair canonically so that two
- * genotypes written in either order compare equal.
+ * Build one with `genotype`, which orders the pair so that both writing
+ * orders give the same value.
  * @field locus {string} the locus name
- * @field a {string} the first allele of the ordered pair
- * @field b {string} the second allele; `a == b` is a homozygote
+ * @field a {string} the lower allele in canonical order
+ * @field b {string} the higher allele; equal to `a` for a homozygote
  */
 export def struct Genotype {
     locus as string,
@@ -143,8 +129,8 @@ export def struct Profile {
 };
 
 /**
- * A mixed stain: the set of alleles seen at each locus, with no assumption
- * about how many contributors produced them or how they pair up.
+ * A mixed stain: the alleles seen at each locus, with no assumption about the
+ * number of contributors or how the alleles pair up.
  * @field id {string} a caller-chosen label
  * @field loci {map of string to list of string} locus name -> the alleles observed
  */
@@ -162,11 +148,10 @@ func fail(msg as string) {
 # --- allele helpers ---------------------------------------------------------
 
 /**
- * The numeric repeat count an allele label denotes.
+ * The repeat count an allele label denotes.
  *
- * `"15"` -> 15.0 and `"9.3"` -> 9.3 (nine full repeats plus a three-base
- * microvariant). Non-numeric designations - `"X"`, `"Y"`, `"OL"` - have no
- * repeat count and are an error; test first with `isNumericAllele`.
+ * `"15"` gives 15.0 and `"9.3"` gives 9.3. `"X"`, `"Y"` and `"OL"` have no
+ * repeat count; test with `isNumericAllele` first.
  * @param allele {string} the allele label
  * @return {float} the repeat count
  * @throws {Error} kind "forensicgenetics" if the label is not numeric
@@ -179,7 +164,7 @@ export func alleleValue(allele as string) {
 }
 
 /**
- * Whether an allele label is a plain repeat count (and so has a value).
+ * Whether an allele label is a repeat count: digits with at most one `.`.
  * @param allele {string} the allele label
  * @return {bool} true if `alleleValue` would succeed
  */
@@ -244,26 +229,13 @@ func distinct(xs as list of string) {
 
 /**
  * An empty frequency database.
- * @param name {string} the population / dataset label
+ * @param name {string} the population or dataset label
  * @return {FrequencyDb} a database with no loci
  */
 export func db(name as string) {
     return FrequencyDb{name: $name, loci: {}};
 }
 
-/**
- * A copy of `fdb` with one locus added or replaced.
- *
- * Frequencies are stored as published; the 5/2N floor is applied on read by
- * `alleleFrequency`, so the table keeps its original numbers.
- * @param fdb {FrequencyDb} the database to extend
- * @param locus {string} the locus name
- * @param n {int} the number of individuals typed at this locus
- * @param freqs {map of string to float} allele label -> observed frequency
- * @return {FrequencyDb} the extended copy
- * @throws {Error} kind "forensicgenetics" on an empty locus name, a negative `n`, or a
- *   frequency outside (0, 1]
- */
 # checkLocus validates one locus table, throwing on anything that would make it
 # not a probability distribution. Factored out of withLocus so a function that
 # already owns its FrequencyDb can validate an entry and write it directly,
@@ -291,6 +263,20 @@ func checkLocus(locus as string, n as int, freqs as map of string to float) {
     }
 }
 
+/**
+ * A copy of `fdb` with one locus added or replaced.
+ *
+ * Frequencies are stored as given; `alleleFrequency` applies the 5/(2N) floor
+ * on read. A locus may list only some of its alleles, so a sum below 1 is
+ * accepted.
+ * @param fdb {FrequencyDb} the database to extend
+ * @param locus {string} the locus name
+ * @param n {int} individuals typed at this locus; 0 if unknown (no floor)
+ * @param freqs {map of string to float} allele label -> published frequency
+ * @return {FrequencyDb} the extended copy
+ * @throws {Error} kind "forensicgenetics" on an empty locus name, a negative `n`, a
+ *   frequency outside (0, 1], or frequencies summing past `MAX_FREQUENCY_SUM`
+ */
 export func withLocus(
     fdb as FrequencyDb,
     locus as string,
@@ -320,24 +306,17 @@ func addObservedCounts(counts as map of string to float, lf as LocusFrequencies)
 }
 
 /**
- * Pool several frequency tables into one, weighted by their sample sizes.
+ * Several frequency tables pooled into one, weighted by sample size.
  *
- * The pooled frequency of an allele is the total number of times it was
- * observed across the inputs divided by the total number of alleles typed:
- * `sum(p_i * 2N_i) / sum(2N_i)`. The pooled `N` is the sum of the inputs'.
+ * Each allele's pooled frequency is `sum(p_i * 2N_i) / sum(2N_i)`; the pooled
+ * N is the sum of the inputs' N. Only loci every input carries are pooled;
+ * call `loci` on the result to see which.
  *
- * Only loci that **every** input carries are pooled - pooling a locus from a
- * subset would silently make different loci describe different population
- * mixes. Check `loci` on the result to see what survived.
- *
- * **This is not the way to ask "what if the donor was German or Austrian".**
- * A pooled table is a description of one merged population, and merging
- * populations whose frequencies differ leaves the pool short of heterozygotes
- * relative to Hardy-Weinberg - the Wahlund effect. Because
- * `randomMatchProbability` assumes Hardy-Weinberg, a pooled table biases it
- * *downwards*, which overstates the evidence. Use
- * `randomMatchProbabilityAcross` for an uncertain population, and reserve this
- * for the case where the merged group genuinely is the reference population.
+ * A pooled table describes one merged population. Merging populations whose
+ * frequencies differ leaves it short of heterozygotes (the Wahlund effect), so
+ * `randomMatchProbability` on it is biased downwards and overstates the
+ * evidence. For "the donor was German or Austrian" use
+ * `randomMatchProbabilityAcross`.
  * @param dbs {list of FrequencyDb} the tables to pool; at least one
  * @param name {string} the dataset label for the pooled table
  * @return {FrequencyDb} the pooled table, over the shared loci
@@ -418,7 +397,7 @@ export func hasLocus(fdb as FrequencyDb, locus as string) {
  * The number of individuals typed at a locus.
  * @param fdb {FrequencyDb} the database
  * @param locus {string} the locus name
- * @return {int} the sample size N
+ * @return {int} the sample size N; 0 if unknown
  * @throws {Error} kind "forensicgenetics" if the database has no such locus
  */
 export func sampleSize(fdb as FrequencyDb, locus as string) {
@@ -437,9 +416,8 @@ func lookup(fdb as FrequencyDb, locus as string) {
 /**
  * The NRC II minimum allele frequency for a locus: 5/(2N).
  *
- * No allele is scored rarer than this, which keeps a single unobserved allele
- * from driving a match probability to zero. A locus whose sample size is
- * unknown (`n == 0`) has no floor.
+ * No allele is scored rarer than this, so an unobserved allele cannot drive a
+ * match probability to zero. A locus with `n == 0` has no floor.
  * @param fdb {FrequencyDb} the database
  * @param locus {string} the locus name
  * @return {float} the floor, or 0.0 when N is unknown
@@ -461,15 +439,15 @@ func alleleFloor(n as int) {
 }
 
 /**
- * The frequency of one allele, floored at 5/(2N).
+ * The frequency of one allele, floored at 5/(2N) and capped at 1.0.
  *
- * An allele the reference table never observed is scored at the floor rather
- * than at zero. The returned value is capped at 1.0.
+ * An allele the table does not list is scored at the floor.
  * @param fdb {FrequencyDb} the database
  * @param locus {string} the locus name
  * @param allele {string} the allele label
  * @return {float} the floored frequency, in (0, 1]
- * @throws {Error} kind "forensicgenetics" if the database has no such locus
+ * @throws {Error} kind "forensicgenetics" if the database has no such locus, or
+ *   if the allele is unlisted at a locus with `n == 0`
  */
 export func alleleFrequency(fdb as FrequencyDb, locus as string, allele as string) {
     def lf as LocusFrequencies init lookup($fdb, $locus);
@@ -494,10 +472,11 @@ export func alleleFrequency(fdb as FrequencyDb, locus as string, allele as strin
 # --- genotypes and profiles -------------------------------------------------
 
 /**
- * A genotype at one locus, with its allele pair put in canonical order.
+ * A genotype at one locus, its allele pair in canonical order.
  *
- * The pair is unordered biologically, so `genotype("TH01", "9.3", "6")` and
- * `genotype("TH01", "6", "9.3")` produce the same value and compare equal.
+ * `genotype("TH01", "9.3", "6")` and `genotype("TH01", "6", "9.3")` are equal.
+ * Two numeric alleles order by repeat count; otherwise the order is
+ * lexicographic.
  * @param locus {string} the locus name
  * @param a {string} one allele label
  * @param b {string} the other allele label
@@ -519,7 +498,7 @@ export func genotype(locus as string, a as string, b as string) {
 
 /**
  * Whether a genotype carries the same allele twice.
- * @param g {Genotype} the genotype
+ * @param g {Genotype} the genotype to test
  * @return {bool} true for a homozygote
  */
 export func isHomozygous(g as Genotype) {
@@ -529,8 +508,8 @@ export func isHomozygous(g as Genotype) {
 /**
  * The distinct alleles of a genotype: one label for a homozygote, two for a
  * heterozygote.
- * @param g {Genotype} the genotype
- * @return {list of string} the distinct allele labels
+ * @param g {Genotype} the genotype to read
+ * @return {list of string} the distinct allele labels, in canonical order
  */
 export func alleles(g as Genotype) {
     if (isHomozygous($g)) {
@@ -540,9 +519,12 @@ export func alleles(g as Genotype) {
 }
 
 /**
- * A profile built from a list of genotypes.
+ * A profile from a list of genotypes.
+ *
+ * Builds the profile in one pass; prefer it to folding `withGenotype` over a
+ * list, which copies the profile once per genotype.
  * @param id {string} a label for the profile
- * @param genotypes {list of Genotype} the genotypes, one per locus
+ * @param genotypes {list of Genotype} one genotype per locus
  * @return {Profile} the profile
  * @throws {Error} kind "forensicgenetics" if a locus appears twice
  */
@@ -558,9 +540,9 @@ export func profile(id as string, genotypes as list of Genotype) {
 }
 
 /**
- * A copy of `p` with one genotype added, replacing any genotype already
- * recorded at that locus.
- * @param p {Profile} the profile
+ * A copy of `p` with one genotype added, replacing any genotype already at
+ * that locus.
+ * @param p {Profile} the profile to copy
  * @param g {Genotype} the genotype to set
  * @return {Profile} the updated copy
  */
@@ -572,7 +554,7 @@ export func withGenotype(p as Profile, g as Genotype) {
 
 /**
  * The loci a profile carries, in insertion order.
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to read
  * @return {list of string} the locus names
  */
 export func profileLoci(p as Profile) {
@@ -581,7 +563,7 @@ export func profileLoci(p as Profile) {
 
 /**
  * Whether a profile has a genotype at a locus.
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to test
  * @param locus {string} the locus name
  * @return {bool} true if typed there
  */
@@ -591,7 +573,7 @@ export func hasGenotype(p as Profile, locus as string) {
 
 /**
  * The genotype a profile records at a locus.
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to read
  * @param locus {string} the locus name
  * @return {Genotype} the genotype
  * @throws {Error} kind "forensicgenetics" if the profile is not typed at that locus
@@ -606,11 +588,11 @@ export func genotypeAt(p as Profile, locus as string) {
 /**
  * The loci a profile and a database have in common, in profile order.
  *
- * Use it to narrow a profile before scoring it against a table that does not
- * cover the whole panel: `randomMatchProbability` deliberately refuses a locus
- * it has no frequencies for rather than dropping it silently.
+ * Pass the result to `restrict` to narrow a profile to a table's panel;
+ * `randomMatchProbability` throws on an uncovered locus instead of dropping
+ * it.
  * @param fdb {FrequencyDb} the database
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to compare
  * @return {list of string} the shared locus names
  */
 export func commonLoci(fdb as FrequencyDb, p as Profile) {
@@ -625,7 +607,7 @@ export func commonLoci(fdb as FrequencyDb, p as Profile) {
 
 /**
  * A copy of `p` keeping only the named loci.
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to narrow
  * @param keep {list of string} the locus names to retain
  * @return {Profile} the restricted profile
  * @throws {Error} kind "forensicgenetics" if the profile is not typed at a named locus
@@ -650,23 +632,24 @@ func checkTheta(theta as float) {
 }
 
 /**
- * The single-locus genotype frequency, with the NRC II theta correction.
+ * The single-locus genotype frequency with the NRC II theta correction.
  *
- * This is NRC II recommendation 4.2 (the Balding-Nichols sampling formula),
- * conditioned on one copy of the genotype already being observed - the
- * "match probability" form, not the unconditional population frequency:
+ * NRC II recommendation 4.2 (the Balding-Nichols sampling formula),
+ * conditioned on one copy of the genotype already observed: the match
+ * probability, not the unconditional population frequency.
  *
  * ```
  *   homozygote  aa: [2t + (1-t)pa] [3t + (1-t)pa] / [(1+t)(1+2t)]
  *   heterozygote ab: 2 [t + (1-t)pa] [t + (1-t)pb] / [(1+t)(1+2t)]
  * ```
  *
- * At `theta == 0` these collapse to the familiar Hardy-Weinberg `pa^2` and
- * `2 pa pb`.
+ * `pa` and `pb` are floored at 5/(2N). At `theta == 0` these reduce to the
+ * Hardy-Weinberg `pa^2` and `2 pa pb`. The result is capped at 1.0, which a
+ * floor above the listed frequencies on a small locus can otherwise exceed.
  * @param fdb {FrequencyDb} the reference frequencies
- * @param g {Genotype} the genotype
+ * @param g {Genotype} the genotype to score
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
- * @return {float} the genotype frequency
+ * @return {float} the genotype frequency, at most 1.0
  * @throws {Error} kind "forensicgenetics" on an out-of-range theta or a locus the
  *   database does not cover
  */
@@ -699,18 +682,13 @@ func atMostOne(p as float) {
 /**
  * The random match probability (RMP) of a single-source profile.
  *
- * The product of `genotypeFrequency` across every locus of the profile: the
- * chance that an unrelated person drawn at random from the reference
- * population would carry this profile.
- *
- * Every locus of the profile must be in the database - a silently dropped
- * locus would inflate the RMP without warning. Narrow the profile with
- * `commonLoci` + `restrict` if that is what you want.
- *
- * For a very large panel prefer `log10RandomMatchProbability`, which cannot
- * underflow.
+ * The product of `genotypeFrequency` over every locus of the profile: the
+ * probability that an unrelated person from the reference population carries
+ * it. Every locus must be in the database; narrow the profile with
+ * `commonLoci` and `restrict` first if it is not. On a long panel the product
+ * can underflow; use `log10RandomMatchProbability`.
  * @param fdb {FrequencyDb} the reference frequencies
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to score
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the random match probability
  * @throws {Error} kind "forensicgenetics" on an empty profile, an out-of-range theta,
@@ -730,11 +708,9 @@ export func randomMatchProbability(fdb as FrequencyDb, p as Profile, theta as fl
 /**
  * The base-10 logarithm of the random match probability.
  *
- * Summing logarithms instead of multiplying probabilities, so a panel of
- * hundreds of loci reports `-312.4` where the product would have underflowed
- * to zero. This is also the form a report usually quotes ("1 in 10^18").
+ * Sums per-locus logarithms, so it does not underflow where the product would.
  * @param fdb {FrequencyDb} the reference frequencies
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to score
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} log10 of the random match probability (a negative number)
  * @throws {Error} kind "forensicgenetics" on an empty profile, an out-of-range theta,
@@ -754,10 +730,10 @@ export func log10RandomMatchProbability(fdb as FrequencyDb, p as Profile, theta 
 /**
  * The single-source likelihood ratio, `1 / RMP`.
  *
- * The weight of evidence for "the stain came from this person" against "it
- * came from an unrelated person from the reference population".
+ * "The stain came from this person" against "it came from an unrelated person
+ * from the reference population".
  * @param fdb {FrequencyDb} the reference frequencies
- * @param p {Profile} the profile
+ * @param p {Profile} the profile to score
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
  * @throws {Error} kind "forensicgenetics" as for `randomMatchProbability`
@@ -773,25 +749,23 @@ export func matchLikelihoodRatio(fdb as FrequencyDb, p as Profile, theta as floa
 /**
  * The random match probability when the donor's population is uncertain.
  *
- * This is the law of total probability over the candidate populations:
- * `P(G) = sum(w_i * P(G | population i))`, each term the ordinary
- * `randomMatchProbability` in its own table. It is the right answer to "the
- * donor was German or Austrian" - and it is **not** the same number as
- * computing one probability from a pooled table, which averages the allele
- * frequencies instead of the genotype probabilities and understates the
- * result (see `combineFrequencies`).
+ * The law of total probability over the candidate populations:
+ * `P(G) = sum(w_i * P(G | population i))`, each term `randomMatchProbability`
+ * in its own table. A table pooled with `combineFrequencies` averages allele
+ * frequencies instead of genotype probabilities and gives a smaller number.
  *
- * The weights are the prior probabilities that the donor came from each
- * population and must sum to 1. Equal weights say only "one of these, no
- * reason to prefer either". Every table must cover every locus in the profile.
+ * The weights are the priors that the donor came from each population. They
+ * must be non-negative and sum to 1 within 0.001. Every table must cover every
+ * locus of the profile.
  * @param dbs {list of FrequencyDb} the candidate populations; at least one
- * @param weights {list of float} the prior per population, summing to 1.0
- * @param p {Profile} the profile
- * @param theta {float} the sub-population correction, applied within each
+ * @param weights {list of float} the prior per population, in `dbs` order
+ * @param p {Profile} the profile to score
+ * @param theta {float} the co-ancestry coefficient, applied within each
  *   population
  * @return {float} the weighted random match probability
  * @throws {Error} kind "forensicgenetics" on an empty list, a length mismatch,
- *   a negative weight, or weights that do not sum to 1.0
+ *   a negative weight, weights that do not sum to 1.0, or any error of
+ *   `randomMatchProbability`
  */
 export func randomMatchProbabilityAcross(
     dbs as list of FrequencyDb,
@@ -826,13 +800,12 @@ export func randomMatchProbabilityAcross(
 }
 
 /**
- * The single-source likelihood ratio when the donor's population is uncertain.
- *
- * `1 / randomMatchProbabilityAcross(...)`, on the same terms.
+ * The single-source likelihood ratio when the donor's population is uncertain:
+ * `1 / randomMatchProbabilityAcross(...)`.
  * @param dbs {list of FrequencyDb} the candidate populations
  * @param weights {list of float} the prior per population, summing to 1.0
- * @param p {Profile} the profile
- * @param theta {float} the sub-population correction
+ * @param p {Profile} the profile to score
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
  * @throws {Error} kind "forensicgenetics" as `randomMatchProbabilityAcross`,
  *   or if the weighted probability is zero
@@ -852,7 +825,8 @@ export func matchLikelihoodRatioAcross(
 # --- mixtures: inclusion / exclusion ----------------------------------------
 
 /**
- * A mixture: the alleles observed at each locus of a mixed stain.
+ * A mixture from the alleles observed at each locus. Repeated alleles in a
+ * list are collapsed.
  * @param id {string} a label for the mixture
  * @param observed {map of string to list of string} locus -> observed alleles
  * @return {Mixture} the mixture
@@ -872,7 +846,7 @@ export func mixture(id as string, observed as map of string to list of string) {
 
 /**
  * The loci a mixture covers, in insertion order.
- * @param m {Mixture} the mixture
+ * @param m {Mixture} the mixture to read
  * @return {list of string} the locus names
  */
 export func mixtureLoci(m as Mixture) {
@@ -882,14 +856,10 @@ export func mixtureLoci(m as Mixture) {
 /**
  * The probability of inclusion (PI) at one locus.
  *
- * `(sum of the observed alleles' frequencies)^2` - the chance that a random
- * person's genotype at this locus is built entirely from alleles the mixture
- * shows, and therefore cannot be excluded as a contributor. The sum is capped
- * at 1.0, which the 5/2N floor can otherwise push past on a locus with many
- * observed alleles.
- *
- * PI is deliberately theta-free: it is a count of who cannot be excluded, not
- * a coancestry-corrected match probability.
+ * `(sum of the observed alleles' floored frequencies)^2`: the probability that
+ * a random person carries only alleles the mixture shows. The sum is capped at
+ * 1.0 before squaring. Repeated alleles count once. No theta: PI counts who
+ * cannot be excluded, it is not a co-ancestry-corrected match probability.
  * @param fdb {FrequencyDb} the reference frequencies
  * @param locus {string} the locus name
  * @param observed {list of string} the alleles seen at that locus
@@ -925,12 +895,10 @@ export func exclusionProbability(fdb as FrequencyDb, locus as string, observed a
 }
 
 /**
- * The combined probability of inclusion (CPI) across a mixture's loci.
- *
- * The product of the per-locus `inclusionProbability`: the proportion of the
- * population that could not be excluded as a contributor at *every* locus.
+ * The combined probability of inclusion (CPI): the product of
+ * `inclusionProbability` over the mixture's loci.
  * @param fdb {FrequencyDb} the reference frequencies
- * @param m {Mixture} the mixture
+ * @param m {Mixture} the mixture to score
  * @return {float} the combined probability of inclusion
  * @throws {Error} kind "forensicgenetics" on an empty mixture or a locus the database
  *   does not cover
@@ -947,12 +915,10 @@ export func cpi(fdb as FrequencyDb, m as Mixture) {
 }
 
 /**
- * The combined probability of exclusion (CPE): `1 - CPI`.
- *
- * The proportion of the population excluded as a contributor by at least one
- * locus - the number a CPI/CPE mixture report quotes.
+ * The combined probability of exclusion (CPE): `1 - CPI`, the share of the
+ * population excluded by at least one locus.
  * @param fdb {FrequencyDb} the reference frequencies
- * @param m {Mixture} the mixture
+ * @param m {Mixture} the mixture to score
  * @return {float} the combined probability of exclusion
  * @throws {Error} kind "forensicgenetics" as for `cpi`
  */
@@ -961,12 +927,11 @@ export func cpe(fdb as FrequencyDb, m as Mixture) {
 }
 
 /**
- * Whether every allele of `p`'s genotype at each shared locus appears in the
- * mixture - the non-exclusion test CPI quantifies.
+ * Whether every allele of `p` at each shared locus appears in the mixture: the
+ * non-exclusion test that CPI quantifies.
  *
- * Loci the mixture does not cover are skipped; a locus where the profile is
- * untyped is skipped too. Sharing no locus at all is an error rather than a
- * vacuous `true`: no data is not the same as not excluded.
+ * Loci only one of the two carries are skipped. Sharing no locus at all
+ * throws rather than returning a vacuous `true`.
  * @param p {Profile} the profile under test
  * @param m {Mixture} the mixture
  * @return {bool} false as soon as one locus excludes the profile

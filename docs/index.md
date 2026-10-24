@@ -1,87 +1,59 @@
-# @jennifer/forensicgenetics
+# @deckyard/forensicgenetics
 
 Forensic and statistical genetics for [Jennifer](https://jennifer-lang.dev/).
+The deck works on profiles (an unordered allele pair per autosomal STR locus,
+plus mtDNA and Y-STR haplotypes) and on reference frequency or count data. It
+does not handle sequences, apart from aligning an mtDNA region to name its
+differences.
 
-This deck works on **profiles** - an unordered allele pair per autosomal STR
-locus, plus uniparental haplotypes for mtDNA and Y-STR - and on reference
-**frequency or count** data. It does not work on sequences; that is the
-sequence deck's job, and the two share no code.
+This deck is part of [Deckyard](https://github.com/deckyard), community decks for [Jennifer](https://jennifer-lang.dev/).
 
-## What it answers
+## What it computes
 
-Four questions, each with its own module:
+| Question | Statistic | Guide |
+| --- | --- | --- |
+| Could the stain have come from someone else? | RMP with NRC II theta, single-source LR | [Match probability](casework/match-probability.md) |
+| How much of the population is not excluded from a mixture? | PI / PE, CPI / CPE | [Mixtures](casework/mixtures.md) |
+| Are these two people related, and how? | kinship LR from IBD coefficients | [Kinship](casework/kinship.md) |
+| Is this man the child's father? | trio paternity index with a stepwise mutation model | [Paternity](casework/paternity.md) |
+| What does the whole family say? | pedigree likelihood by Elston-Stewart peeling | [General pedigrees](casework/pedigrees.md) |
+| How common is this haplotype? | Clopper-Pearson upper bound on a database count | [Lineage markers](casework/lineage.md) |
 
-**Could this stain have come from someone else?**
-A random match probability from Hardy-Weinberg genotype frequencies with the
-NRC II theta correction, multiplied across a panel - and its reciprocal, the
-single-source likelihood ratio. For a mixed stain, the combined probability of
-inclusion and exclusion instead. See [Match probability](casework/match-probability.md)
-and [Mixtures](casework/mixtures.md).
+## Modules
 
-**Are these two people related, and how?**
-A likelihood ratio built from the pair's IBD coefficients, testing one
-relationship against another. See [Kinship](casework/kinship.md).
+| Module | Import | Covers |
+| --- | --- | --- |
+| `forensicgenetics.j` | `@deckyard/forensicgenetics/` | profiles, `FrequencyDb`, match probability, mixtures |
+| `kinship.j` | `@deckyard/forensicgenetics/kinship.j` | relationship LRs, paternity |
+| `pedigree.j` | `@deckyard/forensicgenetics/pedigree.j` | whole-pedigree likelihoods |
+| `lineage.j` | `@deckyard/forensicgenetics/lineage.j` | mtDNA and Y-STR |
 
-**Is this man the child's father?**
-A trio calculation over mother, child and alleged father, with a stepwise
-mutation model so that one inconsistent locus is not a false exclusion. See
-[Paternity](casework/paternity.md).
-
-**What about everyone else in the family?**
-The likelihood of a whole pedigree by Elston-Stewart peeling, which sums out
-every untyped member - the question that arises the moment the person you
-actually want to test is unavailable. See [General pedigrees](casework/pedigrees.md).
-
-Plus [lineage markers](casework/lineage.md): mtDNA and Y-STR haplotypes, where
-the estimate is a database count rather than a product over loci.
-
-## The shape of it
+`kinship` and `pedigree` import the core; `lineage` imports nothing from the
+deck. The core reads no published frequency format: a reader deck such as
+[`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
+(STRidER XML) converts one into a `FrequencyDb`.
 
 ```jennifer
-import "@jennifer/forensicgenetics/" as forensics;
+import "@deckyard/forensicgenetics/" as forensicgenetics;
 
-def db as forensics.FrequencyDb init forensics.withLocus(
-    forensics.db("example"), "D3S1358", 1034,
+def db as forensicgenetics.FrequencyDb init forensicgenetics.withLocus(
+    forensicgenetics.db("example"), "D3S1358", 1034,
     {"15": 0.2456, "16": 0.2314, "17": 0.2007, "18": 0.3223});
-
-def suspect as forensics.Profile init forensics.profile("S1", [
-    forensics.genotype("D3S1358", "15", "16"),
-    forensics.genotype("TH01", "6", "9.3")
+def suspect as forensicgenetics.Profile init forensicgenetics.profile("S1", [
+    forensicgenetics.genotype("D3S1358", "15", "16")
 ]);
-
-def lr as float init forensics.matchLikelihoodRatio($db, $suspect,
-    forensics.THETA_GENERAL);
+def lr as float init forensicgenetics.matchLikelihoodRatio($db, $suspect,
+    forensicgenetics.THETA_GENERAL);
 ```
 
-Five modules, three of which you can ignore until you need them:
+Every module throws `Error` with its own `kind`: `"forensicgenetics"`,
+`"kinship"`, `"pedigree"` or `"lineage"`.
 
-| Module | Import | Topic |
-| --- | --- | --- |
-| `forensicgenetics.j` | `@jennifer/forensicgenetics/` | Profiles, the generic frequency database, match probability, mixtures |
-| `kinship.j` | `@jennifer/forensicgenetics/kinship.j` | Relationship LRs, paternity |
-| `pedigree.j` | `@jennifer/forensicgenetics/pedigree.j` | Whole-pedigree likelihoods |
-| `lineage.j` | `@jennifer/forensicgenetics/lineage.j` | mtDNA and Y-STR |
-
-`kinship` and `pedigree` build on the core; `lineage` is independent and can be
-used on its own. The core imports nothing - it defines the generic
-`FrequencyDb` and reads no published format, so a reader deck for any source
-converts into the same type. [`@mplx/strider`](https://github.com/mplx/deck-strider-frequency-converter)
-does that for STRidER-style XML.
-
-Every module raises `Error` with its own `kind` - `"forensicgenetics"`,
-`"kinship"`, `"pedigree"`, `"lineage"` - so a `catch` can tell an unusable
-frequency table from an impossible pedigree.
-
-## Where to go next
-
-New here: [Installing the deck](getting-started/installation.md), then the
-[Quick start](getting-started/quick-start.md).
-
-Looking for a formula: [Formulae and sources](project/formulae.md) collects
-every estimator in one place with its citation.
-
-About to rely on a number: read [Limitations](project/limitations.md) first.
-It is short, and some of it will change what you do.
+Start with [Installing the deck](getting-started/installation.md) and the
+[Quick start](getting-started/quick-start.md). Every formula and its source is
+in [Formulae and sources](project/formulae.md); every export is in the
+[Cheatsheet](reference/cheatsheet.md). Read [Limitations](project/limitations.md)
+before relying on a number.
 
 ## Not a validated forensic tool
 
@@ -90,9 +62,9 @@ has not been through the validation any jurisdiction requires of software used
 in casework. Treat it as a library for research, teaching and cross-checking,
 and validate independently before it informs a real conclusion.
 
-The bundled frequency table is synthetic - made-up numbers that exist only to
-exercise the reader and the examples. Real reference data comes from
-[STRidER](https://strider.online/) and elsewhere; see
+The frequency table the examples build (`examples/lib/exampledb.j`) is
+synthetic: made-up numbers that exist only to exercise the examples. Real
+reference data comes from [STRidER](https://strider.online/) and elsewhere; see
 [Reference frequency data](concepts/frequency-data.md).
 
 ### Not for legal or court use

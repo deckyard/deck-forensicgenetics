@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # White-box test overlay for lineage.j. Run with `jennifer test lineage_test.j`.
@@ -467,4 +467,70 @@ func testALongIndelForcesTheBandWider() {
     def ref as string init strings.repeat("ACGT", 40);
     def smp as string init strings.substring($ref, 0, 20) + strings.substring($ref, 120, 160);
     testing.assertTrue(assertSameAsFullWidth($ref, $smp));
+}
+
+# --- documented edge cases with no assertion yet ----------------------------
+
+func confidenceOfOne() {
+    haplotypeUpperBound(1, 10, 1.0);
+}
+
+func testConfidenceMustBeBelowOne() {
+    testing.assertThrows("confidenceOfOne", "lineage");
+}
+
+func testZeroSightingBoundAtAnotherConfidence() {
+    # k = 0 closed form at 99%: 1 - 0.01^(1/N).
+    near(haplotypeUpperBound(0, 300, 0.99), 1.0 - math.pow(0.01, 1.0 / 300.0));
+    near(lineageLikelihoodRatio(0, 100), 1.0 / (1.0 - math.pow(0.05, 1.0 / 100.0)));
+}
+
+func testParseTrimsAndUpperCases() {
+    testing.assertEqual(parseDifference(" 16189c "), parseDifference("16189C"));
+}
+
+func badEmpty() {
+    parseDifference("   ");
+}
+
+func badInsertionZero() {
+    parseDifference("315.0C");
+}
+
+func testMoreMalformedDesignationsThrow() {
+    testing.assertThrows("badEmpty", "lineage");
+    testing.assertThrows("badInsertionZero", "lineage");
+}
+
+func formatUnknownKind() {
+    formatDifference(Difference{position: 1, insertion: 0, base: "A", kind: "inv"});
+}
+
+func testFormatRejectsAnUnknownKind() {
+    testing.assertThrows("formatUnknownKind", "lineage");
+}
+
+func testMtHaplotypeFromNumbersInReferenceCoordinates() {
+    # Four reference bases from 16024 cover 16024-16027; the change is the third.
+    def h as MtHaplotype init mtHaplotypeFrom("S1", "ACGT", "ACAT", 16024);
+    testing.assertEqual($h.ranges, ["16024-16027"]);
+    testing.assertEqual(mtDesignations($h), ["16026A"]);
+}
+
+func yEmptyLocusName() {
+    yHaplotype("bad", {"": "14"});
+}
+
+func yNoAlleles() {
+    yHaplotype("bad", {"DYS19": " , "});
+}
+
+func testYHaplotypeValidatesItsInput() {
+    testing.assertThrows("yEmptyLocusName", "lineage");
+    testing.assertThrows("yNoAlleles", "lineage");
+}
+
+func testYMultiCopyAcceptsASlash() {
+    def b as YHaplotype init yHaplotype("B", {"DYS385": "14/11"});
+    testing.assertTrue(yMatches(yA(), $b));
 }

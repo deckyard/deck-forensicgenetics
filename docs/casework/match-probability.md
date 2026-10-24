@@ -1,80 +1,65 @@
 # Match probability
 
-The single-source question: a stain matches a suspect's profile, so how
-surprising would that match be if the stain had come from someone else?
+A stain matches a suspect's single-source profile. The random match
+probability (RMP) is the probability that an unrelated person from the
+reference population carries the same profile.
 
 ## One locus
 
 ```jennifer
-def f as float init forensics.genotypeFrequency($db, $g, forensics.THETA_GENERAL);
+def f as float init forensicgenetics.genotypeFrequency($db, $g, forensicgenetics.THETA_GENERAL);
 ```
 
-The NRC II recommendation 4.2 genotype frequency - `pa²` and `2 pa pb`
-corrected for co-ancestry. The formulae and the choice of theta are in
-[Theta and the sub-population correction](../concepts/theta.md); the `5/(2N)`
-floor applied to `pa` and `pb` on the way in is in
+NRC II recommendation 4.2 with the theta correction, on allele frequencies
+floored at `5/(2N)`, capped at 1. See [Theta](../concepts/theta.md) and
 [Reference frequency data](../concepts/frequency-data.md).
 
 ## Across a panel
 
 ```jennifer
-def rmp as float init forensics.randomMatchProbability($db, $p, $theta);
-def lr as float init forensics.matchLikelihoodRatio($db, $p, $theta);
+def rmp as float init forensicgenetics.randomMatchProbability($db, $p, $theta);
+def lr as float init forensicgenetics.matchLikelihoodRatio($db, $p, $theta);
 ```
 
-`randomMatchProbability` multiplies `genotypeFrequency` over every locus of the
-profile. `matchLikelihoodRatio` is `1 / RMP` - the weight of evidence for *the
-stain came from this person* against *it came from an unrelated person from the
-reference population*.
-
-Note what the denominator hypothesis says: **unrelated**. A relative is not an
-unrelated person, and for a brother the right number is not the RMP at all -
+`randomMatchProbability` is the product of `genotypeFrequency` over every locus
+of the profile. `matchLikelihoodRatio` is `1 / RMP`: "the stain came from this
+person" against "it came from an unrelated person from the reference
+population". For a relative as the alternative, the RMP is the wrong number;
 see [Kinship](kinship.md).
 
-## Long panels: use the logarithm
+## Long panels
 
-Twenty loci put an RMP somewhere around 10⁻²⁵, which a float carries fine.
-Fifty or a hundred loci do not. `log10RandomMatchProbability` sums logarithms
-instead of multiplying probabilities:
+Twenty loci give an RMP near 10⁻²⁵, which a float holds. Longer panels can
+underflow. `log10RandomMatchProbability` sums logarithms instead:
 
 ```jennifer
-def logRmp as float init forensics.log10RandomMatchProbability($db, $p, $theta);
+def logRmp as float init forensicgenetics.log10RandomMatchProbability($db, $p, $theta);
 io.printf("about 1 in 10^%f|prec=1\n", -$logRmp);
 ```
 
-It is also the form a report usually quotes - "one in 10¹⁸" rather than a
-number with eighteen leading zeros.
-
 ## Missing loci are refused, not skipped
 
-`randomMatchProbability` throws if the profile carries a locus the frequency
-table does not cover:
+`randomMatchProbability` throws on a profile locus the table does not cover:
 
 ```
 frequency database 'Example' has no locus 'SE33'
 ```
 
-This is deliberate. Dropping the locus quietly would raise the RMP - weaker
-evidence - without anything in the output saying a locus had been discarded.
-That is the failure mode where a wrong number looks exactly like a right one.
-
-When narrowing the panel really is what you want, say so:
+Dropping the locus would raise the RMP without any sign in the output. To
+score the shared loci only, narrow the profile and report which loci remain:
 
 ```jennifer
-def narrowed as forensics.Profile init forensics.restrict($p,
-    forensics.commonLoci($db, $p));
-def rmp as float init forensics.randomMatchProbability($db, $narrowed, $theta);
+def narrowed as forensicgenetics.Profile init forensicgenetics.restrict($p,
+    forensicgenetics.commonLoci($db, $p));
+def rmp as float init forensicgenetics.randomMatchProbability($db, $narrowed, $theta);
+def used as list of string init forensicgenetics.profileLoci($narrowed);
 ```
 
-Now the loci that contributed are `forensics.profileLoci($narrowed)`, and you
-can print them.
+An empty profile throws as well.
 
-An empty profile is an error too.
+## Worked example
 
-## A worked example
-
-From `examples/matchprobability.j`, against the bundled synthetic table at
-`θ = 0.01`:
+`examples/matchprobability.j`, synthetic table, `θ = 0.01`:
 
 ```
 locus       genotype    frequency
@@ -90,26 +75,15 @@ D16S539      11/12        0.025092
 log10 RMP = -14.792   ->  about 1 in 6.2 x 10^14
 ```
 
-Two things to read off it. The homozygote `17/17` at vWA contributes far more
-than any heterozygote - squaring a frequency is what drives a match
-probability. And the whole answer is a product of eight ordinary-looking
-numbers; no single locus is decisive, which is exactly why a panel is used.
+No single locus is decisive; the answer is the product of eight ordinary
+frequencies.
 
-## Reporting checklist
+## What to report with the number
 
-A match probability is meaningless without the assumptions that produced it.
-Whatever you print, print these beside it:
+- the reference population: `$db.name` and the table's source
+- theta: 0.01 and 0.03 differ by about 1.7 orders of magnitude on this profile
+- the loci used, especially after `restrict`
+- that the alternative is an unrelated person, and a kinship LR if relatives
+  are possible
 
-- **which reference population** - `$db.name`, and where the table came from
-- **which theta** - 0.01 and 0.03 differ by two orders of magnitude here
-- **which loci contributed** - `forensics.profileLoci($p)`, especially if the
-  profile was narrowed
-- **that the alternative is an unrelated person** - and, if relatives are in
-  the frame, a kinship LR as well
-
-## Related
-
-- [Mixtures](mixtures.md) - when the stain has more than one contributor
-- [Kinship](kinship.md) - when the alternative suspect is a relative
-- [Theta](../concepts/theta.md) - the correction and its cost
-- [`forensicgenetics` reference](../reference/forensicgenetics.md) - every signature
+See also [Mixtures](mixtures.md) for more than one contributor.

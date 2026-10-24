@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # A mother / child / alleged-father trio, including the single locus where the
@@ -7,7 +7,7 @@
 #
 # Run from the deck root:  jennifer run examples/paternity.j
 #
-# The frequency table is synthetic - see testdata/frequencies.xml.
+# The frequency table is synthetic; see examples/lib/exampledb.j.
 use io;
 use math;
 

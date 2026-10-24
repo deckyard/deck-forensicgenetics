@@ -1,16 +1,11 @@
 # Mixtures
 
-A mixed stain has no genotype. All that can be read off it is the set of
-alleles present at each locus, with no reliable way to say which contributor
-brought which - and, often, no reliable count of contributors at all.
-
-The deck answers the modest question that needs no such assumptions: **what
-fraction of the population could not be excluded as a contributor?**
-
-## Building a mixture
+A mixed stain has no genotype, only the alleles present at each locus. The
+deck answers the question that needs no assumption about contributors: what
+fraction of the population cannot be excluded?
 
 ```jennifer
-def stain as forensics.Mixture init forensics.mixture("stain", {
+def stain as forensicgenetics.Mixture init forensicgenetics.mixture("stain", {
     "D3S1358": ["15", "16", "17"],
     "vWA": ["16", "17"],
     "FGA": ["21", "22", "24"],
@@ -18,55 +13,48 @@ def stain as forensics.Mixture init forensics.mixture("stain", {
 });
 ```
 
-Repeated alleles are collapsed; a locus with an empty list is an error.
+Repeated alleles collapse; a locus with an empty list throws.
 
 ## Probability of inclusion
 
-At one locus, a person cannot be excluded if *both* their alleles are among
-those the stain shows. Under Hardy-Weinberg the chance of that for a random
-person is the square of the summed frequencies:
+A person is not excluded at a locus if both their alleles are among those
+observed. Under Hardy-Weinberg:
 
 ```
-PI = (Σ observed allele frequencies)²
+PI = (Σ observed allele frequencies)²     sum capped at 1 before squaring
 PE = 1 - PI
 ```
 
-```jennifer
-forensics.inclusionProbability($db, "D3S1358", ["15", "16", "17"]);
-forensics.exclusionProbability($db, "D3S1358", ["15", "16", "17"]);
-```
-
-The sum is capped at 1.0, which the `5/(2N)` floor can otherwise push it past
-at a locus showing many alleles.
-
-Combined across loci:
+The frequencies are floored at `5/(2N)`, which is why the cap can matter at a
+locus showing many alleles.
 
 ```jennifer
-def cpi as float init forensics.cpi($db, $stain);
-def cpe as float init forensics.cpe($db, $stain);
+forensicgenetics.inclusionProbability($db, "D3S1358", ["15", "16", "17"]);
+forensicgenetics.exclusionProbability($db, "D3S1358", ["15", "16", "17"]);
+
+def cpi as float init forensicgenetics.cpi($db, $stain);   # product of PI over loci
+def cpe as float init forensicgenetics.cpe($db, $stain);   # 1 - CPI
 ```
 
-`CPI` is the product of the per-locus `PI`; `CPE = 1 - CPI` is the number a
-mixture report usually quotes.
+`cpi` throws on a mixture with no loci and on a locus the table lacks.
 
-## Is a given profile included?
+No theta: PI counts who cannot be excluded, which is not a co-ancestry-corrected
+match probability. See [Theta](../concepts/theta.md).
+
+## Is a profile included?
 
 ```jennifer
-forensics.isIncluded($suspect, $stain);   # bool
+forensicgenetics.isIncluded($suspect, $stain);   # bool
 ```
 
-This is the non-exclusion test that CPI quantifies, applied to one person. It
-skips loci the mixture does not cover and loci where the profile is untyped,
-and returns false as soon as one locus shows the profile carries an allele the
-stain does not.
+The non-exclusion test for one person. Loci only one side carries are skipped;
+the first locus where the profile has an allele the stain lacks returns
+`false`. A profile and mixture with no shared locus throw instead of returning
+`true`.
 
-If the profile and the mixture share no locus at all it throws rather than
-returning `true`. Having no data is not the same as not being excluded, and a
-vacuous "included" is exactly the kind of answer that gets misread.
+## Worked example
 
-## A worked example
-
-From `examples/matchprobability.j`:
+`examples/matchprobability.j`:
 
 ```
 mixture over 4 loci
@@ -79,48 +67,20 @@ CPI = 0.000011  - 1 in 94808 could not be excluded
 CPE = 0.999989  - the share of the population excluded
 ```
 
-vWA carries most of the weight because the stain shows only two alleles there;
-D3S1358 shows three, so more of the population survives it. A mixture with many
-alleles at every locus excludes almost nobody, and its CPI approaches 1.
-
-## Theta is not applied
-
-`inclusionProbability` and `cpi` take no theta. The probability of inclusion
-counts how much of the population cannot be excluded - a different question
-from a co-ancestry-corrected match probability, and one where the NRC II
-sampling formula does not apply. Mixing the two would produce a number that
-answers neither question. See [Theta](../concepts/theta.md).
+vWA shows two alleles and excludes the most; a stain showing many alleles at
+every locus excludes almost nobody, and its CPI approaches 1.
 
 ## What CPI does not say
 
-CPI/CPE is a deliberately weak statistic, and its weakness is the source of
-most misreporting:
+- It does not say the suspect contributed, only how much of the population is
+  not excluded.
+- It never sees the suspect's profile: two included suspects get the same CPI.
+- It ignores peak heights and the number of contributors.
+- It fails under dropout. A true contributor whose allele did not amplify is
+  excluded at that locus, which is why guidance restricts CPI to complete,
+  unambiguous mixtures.
 
-- **It does not say the suspect is a contributor.** It says what fraction of
-  the population is not excluded. Everyone in that fraction is equally
-  not-excluded.
-- **It does not use the suspect's profile.** `cpi` never sees it. Two suspects
-  with different profiles, both included, get the same CPI.
-- **It ignores peak heights and contributor counts.** A minor contributor whose
-  alleles are barely above threshold counts exactly as much as the major one.
-- **It degrades badly with dropout.** If a contributor's allele failed to
-  amplify, the stain does not show it, and a true contributor is excluded by a
-  locus that was never observed properly. CPI has no way to express that, which
-  is why guidance generally restricts it to complete, unambiguous mixtures.
-
-## What would be stronger
-
-A likelihood ratio that states both hypotheses explicitly - "the suspect and
-one unknown" against "two unknowns" - and models drop-in, dropout and peak
-heights. That is full **mixture deconvolution**, the EuroForMix space, and it
-is a larger effort layered on this base rather than part of it. It is not in
-this deck; see [Limitations](../project/limitations.md).
-
-Where the alternative contributor might be a **relative** rather than a random
-person, [Kinship](kinship.md) is the relevant machinery instead.
-
-## Related
-
-- [Profiles and genotypes](../concepts/profiles.md) - the `Mixture` type
-- [Match probability](match-probability.md) - the single-source case
-- [`forensicgenetics` reference](../reference/forensicgenetics.md)
+A likelihood ratio with explicit hypotheses ("suspect and one unknown" against
+"two unknowns") that models drop-in, dropout and peak heights is full mixture
+deconvolution (the EuroForMix approach). It is not in this deck; see
+[Limitations](../project/limitations.md).

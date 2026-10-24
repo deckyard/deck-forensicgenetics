@@ -2,135 +2,100 @@
 
 ## Alleles are strings
 
-An STR allele designation counts repeats of a short motif, and most of them are
-whole numbers - but not all. `"9.3"` at TH01 is nine full repeats plus a
-three-base partial one; it is common, it is not `9`, and it is not `9.5`.
-`"15.2"` at D19S433 is the same idea. So the deck stores allele labels as
-**strings**, verbatim:
+Allele labels are stored verbatim as strings. `"9.3"` at TH01 and `"15.2"` at
+D19S433 are ordinary designations; `"15"` and `"15.0"` are different keys; and
+`"OL"`, `"X"` and `"Y"` need no special case.
 
 ```jennifer
-def g as forensics.Genotype init forensics.genotype("TH01", "6", "9.3");
+def g as forensicgenetics.Genotype init forensicgenetics.genotype("TH01", "6", "9.3");
 ```
 
-If they were numbers, `"15"` and `"15.0"` would silently become one key,
-`"9.3"` would invite floating-point comparison, and off-ladder designations
-like `"OL"` or amelogenin's `"X"` and `"Y"` would have nowhere to live.
-
-Where repeat-count arithmetic is genuinely wanted - the stepwise mutation model
-is the only place - ask for it explicitly:
+Where repeat-count arithmetic is meant (only the stepwise mutation model needs
+it), convert explicitly:
 
 ```jennifer
-forensics.alleleValue("9.3");        # 9.3
-forensics.isNumericAllele("9.3");    # true
-forensics.isNumericAllele("X");      # false
-forensics.alleleValue("X");          # throws
+forensicgenetics.alleleValue("9.3");        # 9.3
+forensicgenetics.isNumericAllele("9.3");    # true
+forensicgenetics.isNumericAllele("X");      # false
+forensicgenetics.alleleValue("X");          # throws
 ```
 
 ## Genotype
 
-A genotype is an unordered pair at one locus. `genotype` puts the pair in
-canonical order, so the two ways of writing it are the same value and compare
-equal:
+`genotype` puts the pair in canonical order, so both writing orders give equal
+values:
 
 ```jennifer
-forensics.genotype("TH01", "9.3", "6") == forensics.genotype("TH01", "6", "9.3")
+forensicgenetics.genotype("TH01", "9.3", "6") == forensicgenetics.genotype("TH01", "6", "9.3")
 ```
 
-Ordering is by repeat count when both alleles have one, and lexicographic
-otherwise - so a panel that mixes `"15"` with `"X"` still has a total order,
-and `"9.3"` sorts after `"6"` rather than before it as a string comparison
-would have it.
+Two numeric alleles order by repeat count (`"6"` before `"9.3"`); otherwise
+the order is lexicographic.
 
 ```jennifer
-forensics.isHomozygous(forensics.genotype("TH01", "6", "6"));   # true
-forensics.alleles(forensics.genotype("TH01", "6", "6"));        # ["6"]
-forensics.alleles(forensics.genotype("TH01", "6", "7"));        # ["6", "7"]
+forensicgenetics.isHomozygous(forensicgenetics.genotype("TH01", "6", "6"));   # true
+forensicgenetics.alleles(forensicgenetics.genotype("TH01", "6", "6"));        # ["6"]
+forensicgenetics.alleles(forensicgenetics.genotype("TH01", "6", "7"));        # ["6", "7"]
 ```
 
-`alleles` returns the *distinct* alleles: one label for a homozygote, two for a
-heterozygote. That is the set that matters when asking whether a mixture covers
-someone.
+`alleles` returns the distinct alleles.
 
 ## Profile
 
-A profile is one genotype per locus, keyed by locus name:
+One genotype per locus:
 
 ```jennifer
-def p as forensics.Profile init forensics.profile("suspect", [
-    forensics.genotype("D3S1358", "15", "16"),
-    forensics.genotype("vWA", "17", "17"),
-    forensics.genotype("TH01", "6", "9.3")
+def p as forensicgenetics.Profile init forensicgenetics.profile("suspect", [
+    forensicgenetics.genotype("D3S1358", "15", "16"),
+    forensicgenetics.genotype("vWA", "17", "17"),
+    forensicgenetics.genotype("TH01", "6", "9.3")
 ]);
+
+forensicgenetics.profileLoci($p);              # ["D3S1358", "vWA", "TH01"]
+forensicgenetics.hasGenotype($p, "FGA");       # false
+forensicgenetics.genotypeAt($p, "TH01");       # the Genotype; throws if untyped
 ```
 
-Listing a locus twice is an error, not a last-wins overwrite. The map is
-insertion-ordered, so `profileLoci` returns the loci in the order they were
-given.
+A locus listed twice throws. Loci keep insertion order.
+
+`withGenotype` returns a copy with one genotype added or replaced:
 
 ```jennifer
-forensics.profileLoci($p);              # ["D3S1358", "vWA", "TH01"]
-forensics.hasGenotype($p, "FGA");       # false
-forensics.genotypeAt($p, "TH01");       # the Genotype; throws if untyped
-```
-
-To add or replace a genotype, `withGenotype` returns a copy:
-
-```jennifer
-def q as forensics.Profile init forensics.withGenotype($p,
-    forensics.genotype("FGA", "22", "24"));
-```
-
-### Value semantics
-
-Jennifer copies on assignment and on argument passing, and this deck leans on
-that: every builder is copy-returning and nothing mutates its argument.
-
-```jennifer
-def q as forensics.Profile init forensics.withGenotype($p, $g);
+def q as forensicgenetics.Profile init forensicgenetics.withGenotype($p,
+    forensicgenetics.genotype("FGA", "22", "24"));
 # $p is unchanged
 ```
 
-That means a profile can be handed to several calculations without any of them
-being able to disturb it, and a `FrequencyDb` can be shared freely.
+Every builder in the deck returns a copy and leaves its argument alone, so a
+profile or a `FrequencyDb` can be passed to several calculations safely.
 
 ### Narrowing a profile
 
-A profile and a frequency table need not cover the same panel. The deck will
-not guess:
+The deck does not drop loci a table lacks; narrow the profile explicitly:
 
 ```jennifer
-def shared as list of string init forensics.commonLoci($db, $p);
-def narrowed as forensics.Profile init forensics.restrict($p, $shared);
+def shared as list of string init forensicgenetics.commonLoci($db, $p);
+def narrowed as forensicgenetics.Profile init forensicgenetics.restrict($p, $shared);
 ```
 
-`commonLoci` is the intersection in profile order; `restrict` keeps exactly the
-named loci and throws if the profile is untyped at one of them. Doing this
-deliberately is the point - see
-[Match probability](../casework/match-probability.md) for why
-`randomMatchProbability` refuses to do it for you.
+`commonLoci` returns the intersection in profile order. `restrict` keeps the
+named loci and throws if the profile is untyped at one. See
+[Match probability](../casework/match-probability.md#missing-loci-are-refused-not-skipped).
 
 ## Mixture
 
-A mixed stain is not a profile. There is no genotype to record, only the set of
-alleles seen at each locus, with no assumption about how many people
-contributed them or how they pair up:
+A mixed stain records the alleles seen per locus, with no assumption about the
+number of contributors:
 
 ```jennifer
-def stain as forensics.Mixture init forensics.mixture("stain", {
+def stain as forensicgenetics.Mixture init forensicgenetics.mixture("stain", {
     "D3S1358": ["15", "16", "17"],
     "vWA": ["16", "17"],
     "TH01": ["6", "7", "9.3"]
 });
+
+forensicgenetics.isIncluded($suspect, $stain);   # bool
 ```
 
-Repeated alleles in a locus's list are collapsed; an empty list is an error.
-`isIncluded` asks the non-exclusion question directly:
-
-```jennifer
-forensics.isIncluded($suspect, $stain);   # bool
-```
-
-It skips loci the mixture does not cover and loci where the profile is untyped,
-and returns false as soon as one locus shows the profile carries an allele the
-stain does not. See [Mixtures](../casework/mixtures.md) for what that is worth
-numerically.
+Repeated alleles collapse; an empty list throws. For `isIncluded` and the
+statistics see [Mixtures](../casework/mixtures.md).

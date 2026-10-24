@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # White-box test overlay for kinship.j. Run with `jennifer test kinship_test.j`.
@@ -415,4 +415,56 @@ func testChildProbabilityIsAProbability() {
     near(childProbability(gt("10", "11"), gt("10", "10"), {"10": 0.5}), 0.25);
     # The heterozygous case, for contrast: both assignments are real events.
     near(childProbability(gt("10", "11"), gt("10", "12"), {"10": 0.5, "12": 0.5}), 0.25);
+}
+
+# --- documented edge cases with no assertion yet ----------------------------
+
+func locusRateOfOne() {
+    withLocusRate(DEFAULT_MUTATION, "L", 1.0);
+}
+
+func negativeLocusRate() {
+    withLocusRate(DEFAULT_MUTATION, "L", -0.001);
+}
+
+func testWithLocusRateValidatesTheRate() {
+    testing.assertThrows("locusRateOfOne", "kinship");
+    testing.assertThrows("negativeLocusRate", "kinship");
+}
+
+func zeroDenominator() {
+    # Parent and child must share an allele; these two share none.
+    kinshipLRAt(fixture(), gt("10", "11"), gt("12", "13"), UNRELATED, PARENT_CHILD);
+}
+
+func testKinshipLrAtRefusesAZeroDenominator() {
+    testing.assertThrows("zeroDenominator", "kinship");
+}
+
+func trioAtMixedLoci() {
+    paternityIndexAt(
+        fixture(),
+        gt("10", "11"),
+        gt("10", "12"),
+        forensics.genotype("M", "12", "13"),
+        NO_MUTATION);
+}
+
+func testPaternityIndexAtRejectsMixedLoci() {
+    testing.assertThrows("trioAtMixedLoci", "kinship");
+}
+
+func priorOfZero() {
+    probabilityOfPaternityPrior(1000.0, 0.0);
+}
+
+func testPriorMustBeStrictlyInsideTheUnitInterval() {
+    testing.assertThrows("priorOfZero", "kinship");
+}
+
+func testZeroRateNeverCountsSteps() {
+    # With no mutation a changed allele has probability 0 before any step
+    # count is attempted, so non-numeric designations do not throw.
+    near(mutationProbability(NO_MUTATION, "AMEL", "X", "Y"), 0.0);
+    near(mutationProbability(NO_MUTATION, "AMEL", "X", "X"), 1.0);
 }

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # White-box test overlay for pedigree.j. Run with `jennifer test pedigree_test.j`.
@@ -448,4 +448,82 @@ func selfAncestor() {
 
 func testATrueAncestorCycleIsStillCaught() {
     testing.assertThrows("selfAncestor", "pedigree");
+}
+
+# --- documented edge cases with no assertion yet ----------------------------
+
+func emptyId() {
+    withFounder(pedigree("p"), "", "m");
+}
+
+func oneParentOnly() {
+    withChild(withFounder(pedigree("p"), "A", "m"), "B", "m", "A", "");
+}
+
+func testMoreConstructionChecks() {
+    testing.assertThrows("emptyId", "pedigree");
+    testing.assertThrows("oneParentOnly", "pedigree");
+}
+
+func personOfStranger() {
+    personOf(trioPedigree(), "NOBODY");
+}
+
+func isFounderOfStranger() {
+    isFounder(trioPedigree(), "NOBODY");
+}
+
+func testLookupOfAnUnknownMemberThrows() {
+    testing.assertThrows("personOfStranger", "pedigree");
+    testing.assertThrows("isFounderOfStranger", "pedigree");
+}
+
+func testParentsMayBeAddedAfterTheChild() {
+    def p as Pedigree init withChild(pedigree("late"), "CH", "m", "AF", "MO");
+    testing.assertFalse(isSimple($p));
+    $p = withFounder(withFounder($p, "AF", "m"), "MO", "f");
+    testing.assertTrue(isSimple($p));
+    testing.assertEqual(childrenOf($p, "MO"), ["CH"]);
+}
+
+func likelihoodOfEmptyPedigree() {
+    locusLikelihood(pedigree("empty"), {}, fixture(), "L");
+}
+
+func testAnEmptyPedigreeHasNoLikelihood() {
+    testing.assertThrows("likelihoodOfEmptyPedigree", "pedigree");
+}
+
+func zeroDenominatorPedigree() {
+    def profiles as map of string to forensics.Profile init {
+        "AF": one("AF", "10", "10"),
+        "MO": one("MO", "11", "11"),
+        "CH": one("CH", "12", "13")
+    };
+    pedigreeLR(trioPedigree(), trioPedigree(), $profiles, fixture());
+}
+
+func log10WithNoUsableLocus() {
+    log10PedigreeLikelihood(
+        trioPedigree(),
+        {"AF": one("AF", "10", "11")},
+        forensics.withLocus(forensics.db("other"), "M", 100, {"10": 1.0}));
+}
+
+func testPanelFunctionsRefuseUndefinedAnswers() {
+    testing.assertThrows("zeroDenominatorPedigree", "pedigree");
+    testing.assertThrows("log10WithNoUsableLocus", "pedigree");
+}
+
+func testPedigreeLociFollowTheDatabaseOrder() {
+    def p as Pedigree init withFounder(pedigree("p"), "A", "m");
+    def profiles as map of string to forensics.Profile init {
+        "A": forensics.profile("A", [forensics.genotype("M", "10", "10"), gt("10", "11")])
+    };
+    testing.assertEqual(pedigreeLoci($p, $profiles, twoLocus()), ["L", "M"]);
+}
+
+func testAnEmptyProfileIsNotTyped() {
+    def profiles as map of string to forensics.Profile init {"AF": forensics.profile("AF", [])};
+    testing.assertEqual(typedMembers(trioPedigree(), $profiles), []);
 }

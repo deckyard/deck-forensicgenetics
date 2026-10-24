@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 # SYNTHETIC illustrative allele frequencies for the examples - NOT real
 # population data. Every number here is made up.
 #
 # The deck reads no published format: a reader deck converts one into a
-# FrequencyDb - @mplx/strider does that for STRidER XML, at
-# https://github.com/mplx/deck-strider-frequency-converter. The examples build one
+# FrequencyDb - @deckyard/strider does that for STRidER XML, at
+# https://github.com/deckyard/deck-strider-frequency-converter. The examples build one
 # in code instead, so they depend on nothing but the deck itself. For anything
 # you intend to rely on, get a real table from https://strider.online/.
 

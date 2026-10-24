@@ -1,48 +1,36 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * General-pedigree likelihoods by Elston-Stewart peeling.
+ * Whole-pedigree likelihoods by Elston-Stewart peeling.
  *
- * `kinship.j` answers questions about a *pair* of people through their IBD
- * coefficients. That approach breaks down as soon as the question involves
- * three or more relatives at once - a disaster victim identified through two
- * siblings and a niece, a paternity case where the alleged father is dead and
- * only his parents are available. Those need the likelihood of the whole pedigree.
+ * For three or more relatives at once, where `kinship.j`'s pairwise IBD form
+ * loses information: a missing person identified through several relatives, or
+ * a paternity case made through the alleged father's parents.
  *
- * The likelihood of a pedigree at one locus is a sum over every genotype every
- * untyped member could have, which is exponential if taken literally. Peeling
- * makes it linear in the number of people by pushing the sums inward: the
- * pedigree is a tree of individuals and nuclear families, and each branch is
- * summarised - "peeled" - into a vector over the genotypes of the single person
- * connecting it to the rest. This module peels by passing those vectors along
- * the tree's edges, which is Elston-Stewart peeling in its message-passing
- * form.
+ * The likelihood at one locus sums over every genotype of every untyped member.
+ * Peeling passes vectors over genotypes along the edges of the
+ * individual/family tree (the message-passing form), which is linear in the
+ * number of people instead of exponential.
  *
- * **Simple pedigrees only.** Peeling needs the individual/family graph to be a
- * forest. A consanguineous mating, or any other loop, makes the graph cyclic
- * and is rejected by `validate` rather than silently mis-summed. Loops need
- * cutset conditioning, which this module does not do.
+ * Simple pedigrees only: `validate` rejects a loop (a consanguineous mating or
+ * a repeated marriage), since loops need cutset conditioning, which is not
+ * implemented.
  *
- * **Allele lumping.** Alleles that no member's genotype shows are pooled into
- * a single class carrying their combined frequency. Because untyped members are
- * unobserved, those alleles are exchangeable and the pooling is exact, not an
- * approximation - and this keeps a 20-allele locus down to a handful of
- * genotype classes.
- *
- * Like `kinship.j`, this module uses the plain product rule (theta = 0).
+ * Alleles no typed member shows are lumped into one class carrying their
+ * combined frequency. The lumping is exact, because untyped members' alleles
+ * are exchangeable. Theta is 0 throughout, as in `kinship.j`.
  * @module pedigree
  * @example
- * import "@jennifer/forensicgenetics/pedigree.j" as pedigree;
+ * import "@deckyard/forensicgenetics/pedigree.j" as pedigree;
  *
- * # Is the child the son of this man, or of an unrelated man?
- * def h1 as pedigree.Pedigree init pedigree.withChild(
- *     pedigree.withFounder(pedigree.withFounder(pedigree.pedigree("h1"), "AF", "m"), "MO", "f"),
- *     "CH", "m", "AF", "MO");
- * def h2 as pedigree.Pedigree init pedigree.withChild(
- *     pedigree.withFounder(pedigree.withFounder(pedigree.pedigree("h2"), "AF", "m"), "MO", "f"),
- *     "CH", "m", "UN", "MO");
+ * # Is the child the son of AF, or of an unrelated, untyped man UN?
+ * def base as pedigree.Pedigree init pedigree.withFounder(
+ *     pedigree.withFounder(pedigree.withFounder(pedigree.pedigree("trio"), "AF", "m"),
+ *     "MO", "f"), "UN", "m");
+ * def h1 as pedigree.Pedigree init pedigree.withChild($base, "CH", "m", "AF", "MO");
+ * def h2 as pedigree.Pedigree init pedigree.withChild($base, "CH", "m", "UN", "MO");
  * def lr as float init pedigree.pedigreeLR($h1, $h2, $profiles, $db);
  */
 use math;
@@ -52,14 +40,10 @@ use lists;
 import "./forensicgenetics.j" as forensics;
 
 /**
- * One member of a pedigree.
- *
- * A founder has `""` for both parents. Everyone else names both - a pedigree
- * with only one parent recorded is rejected, because the missing parent is
- * still a source of alleles and leaving them out changes the answer.
+ * One member of a pedigree. A founder has `""` for both parents; everyone else
+ * names both.
  * @field id {string} the member's identifier, unique within the pedigree
- * @field sex {string} "m", "f" or "" if unstated; recorded but not used by the
- *   autosomal calculation
+ * @field sex {string} "m", "f" or ""; not used by the autosomal calculation
  * @field father {string} the father's id, or "" for a founder
  * @field mother {string} the mother's id, or "" for a founder
  */
@@ -120,8 +104,8 @@ export func pedigree(name as string) {
 }
 
 /**
- * A copy of `ped` with a founder added - a member whose parents are not part
- * of the pedigree.
+ * A copy of `ped` with a founder added: a member whose parents are outside the
+ * pedigree.
  * @param ped {Pedigree} the pedigree to extend
  * @param id {string} the new member's id
  * @param sex {string} "m", "f" or ""
@@ -138,9 +122,8 @@ export func withFounder(ped as Pedigree, id as string, sex as string) {
 /**
  * A copy of `ped` with a child added.
  *
- * Both parents must be named. They need not exist yet - a pedigree can be
- * built in any order - but `validate` (and every likelihood function) requires
- * them to exist by the time it is used.
+ * Both parents must be named. They need not be members yet, but `validate`
+ * and every likelihood function require them to be.
  * @param ped {Pedigree} the pedigree to extend
  * @param id {string} the new member's id
  * @param sex {string} "m", "f" or ""
@@ -148,7 +131,8 @@ export func withFounder(ped as Pedigree, id as string, sex as string) {
  * @param mother {string} the mother's id
  * @return {Pedigree} the extended copy
  * @throws {Error} kind "pedigree" on an empty or duplicate id, an unknown sex,
- *   an unnamed parent, or a member named as their own parent
+ *   an unnamed parent, a member named as their own parent, or the same id for
+ *   both parents
  */
 export func withChild(
     ped as Pedigree,
@@ -217,8 +201,8 @@ export func personOf(ped as Pedigree, id as string) {
 }
 
 /**
- * Whether a member is a founder - someone whose parents are outside the
- * pedigree, and whose genotype therefore comes from the population.
+ * Whether a member is a founder, whose genotype prior is the population
+ * frequency.
  * @param ped {Pedigree} the pedigree
  * @param id {string} the member id
  * @return {bool} true for a founder
@@ -229,7 +213,8 @@ export func isFounder(ped as Pedigree, id as string) {
 }
 
 /**
- * The children a member has within the pedigree, in member order.
+ * The children a member has within the pedigree, in member order. An unknown
+ * id has none.
  * @param ped {Pedigree} the pedigree
  * @param id {string} the member id
  * @return {list of string} the children's ids
@@ -248,12 +233,10 @@ export func childrenOf(ped as Pedigree, id as string) {
 # --- structural validation --------------------------------------------------
 
 /**
- * Check that a pedigree is well formed and peelable.
- *
- * Verifies that every named parent exists, that nobody is their own ancestor,
- * and that the individual/family graph is a forest - the condition
- * Elston-Stewart peeling needs. A consanguineous mating or any other loop is
- * rejected here rather than mis-summed later.
+ * Check that a pedigree is well formed and peelable: every named parent is a
+ * member, nobody is their own ancestor, and the individual/family graph is a
+ * forest. A consanguineous mating is reported as a loop, not as an ancestor
+ * cycle.
  * @param ped {Pedigree} the pedigree
  * @throws {Error} kind "pedigree" naming the specific problem
  */
@@ -485,10 +468,7 @@ func findRoot(parent as map of string to string, x as string) {
 }
 
 /**
- * Whether a pedigree is well formed and free of loops.
- *
- * The non-throwing form of `validate`, for deciding whether peeling is
- * available before committing to it.
+ * The non-throwing form of `validate`.
  * @param ped {Pedigree} the pedigree
  * @return {bool} true if `validate` would succeed
  */
@@ -914,20 +894,21 @@ func familyMembers(frame as Frame, id as string) {
 }
 
 /**
- * The likelihood of a pedigree at one locus.
+ * The likelihood of a pedigree at one locus: the probability of the observed
+ * genotypes given the parentages, with every untyped member summed out.
  *
- * The probability of the observed genotypes given the pedigree's parentages,
- * with every untyped member's genotype summed out. Members absent from
- * `genotypes` are untyped; ids in `genotypes` that the pedigree does not
- * contain are ignored.
+ * Members absent from `genotypes` are untyped; ids that are not members are
+ * ignored. A pedigree in several unconnected parts is the product of their
+ * likelihoods.
  * @param ped {Pedigree} the pedigree
  * @param genotypes {map of string to Genotype} member id -> observed genotype
  *   at this locus
  * @param db {FrequencyDb} the reference frequencies
  * @param locus {string} the locus name
  * @return {float} the likelihood at this locus
- * @throws {Error} kind "pedigree" if the pedigree is malformed or contains a
- *   loop, or kind "forensicgenetics" if the database does not cover the locus
+ * @throws {Error} kind "pedigree" if the pedigree is malformed, looped or
+ *   empty, or a member's genotype is at another locus; kind "forensicgenetics"
+ *   if the database does not cover the locus
  */
 export func locusLikelihood(
     ped as Pedigree,
@@ -960,10 +941,7 @@ export func locusLikelihood(
 # --- across a panel ---------------------------------------------------------
 
 /**
- * The loci a pedigree's typed members and the database have in common.
- *
- * A locus counts if the database covers it and at least one member of the
- * pedigree is typed there.
+ * The loci the database covers and at least one pedigree member is typed at.
  * @param ped {Pedigree} the pedigree
  * @param profiles {map of string to Profile} member id -> that member's profile
  * @param db {FrequencyDb} the reference frequencies
@@ -997,12 +975,9 @@ func genotypesAt(ped as Pedigree, profiles as map of string to forensics.Profile
 }
 
 /**
- * The likelihood of a pedigree across a whole panel: the product of
- * `locusLikelihood` over every locus in `pedigreeLoci`.
- *
- * For a large panel the product underflows long before the answer is
- * meaningless - use `log10PedigreeLikelihood`, or take the ratio of two
- * pedigrees with `pedigreeLR`, which stays in range.
+ * The likelihood of a pedigree across a panel: the product of
+ * `locusLikelihood` over `pedigreeLoci`. A long panel can underflow; use
+ * `log10PedigreeLikelihood` or `pedigreeLR`.
  * @param ped {Pedigree} the pedigree
  * @param profiles {map of string to Profile} member id -> that member's profile
  * @param db {FrequencyDb} the reference frequencies
@@ -1027,8 +1002,8 @@ export func pedigreeLikelihood(
 }
 
 /**
- * The base-10 logarithm of `pedigreeLikelihood`, summed across loci so a large
- * panel cannot underflow.
+ * The base-10 logarithm of `pedigreeLikelihood`, summed per locus so it does
+ * not underflow.
  * @param ped {Pedigree} the pedigree
  * @param profiles {map of string to Profile} member id -> that member's profile
  * @param db {FrequencyDb} the reference frequencies
@@ -1062,18 +1037,14 @@ export func log10PedigreeLikelihood(
 }
 
 /**
- * The likelihood ratio between two competing pedigrees for the same people.
+ * The likelihood ratio of two pedigrees over the same typed people.
  *
- * The weight of evidence for the parentages in `numerator` against those in
- * `denominator`. The ratio is taken locus by locus, so it stays in range where
- * either likelihood alone would underflow.
- *
- * Both pedigrees must have the same typed members - otherwise the two
- * hypotheses are being scored against different data, and their ratio means
- * nothing. Untyped members may differ freely; that is how a hypothesis
- * introduces an unknown alternative father.
- * @param numerator {Pedigree} the pedigree under the first hypothesis
- * @param denominator {Pedigree} the pedigree under the second
+ * Taken locus by locus over the numerator's `pedigreeLoci`, so it stays in
+ * range where either likelihood would underflow. Both pedigrees must type the
+ * same members; untyped members may differ, which is how a hypothesis adds an
+ * unknown alternative father.
+ * @param numerator {Pedigree} the first hypothesis
+ * @param denominator {Pedigree} the second hypothesis
  * @param profiles {map of string to Profile} member id -> that member's profile
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio

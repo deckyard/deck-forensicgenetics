@@ -24,6 +24,7 @@
 
 # API reference
 
+- [Cheatsheet](reference/cheatsheet.md)
 - [forensicgenetics](reference/forensicgenetics.md)
 - [kinship](reference/kinship.md)
 - [pedigree](reference/pedigree.md)
