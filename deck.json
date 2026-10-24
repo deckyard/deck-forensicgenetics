@@ -1,16 +1,16 @@
 {
   "package": {
-    "name": "@jennifer/forensicgenetics",
+    "name": "@deckyard/forensicgenetics",
     "version": "0.2.0-dev",
     "description": "Forensic and statistical genetics: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers.",
     "license": "LGPL-3.0-only",
     "urls": {
-      "deck": "https://raw.githubusercontent.com/jennifer-language/deck-forensicgenetics/main/deck.json",
-      "homepage": "https://github.com/jennifer-language/deck-forensicgenetics",
-      "manual": "https://jennifer-language.github.io/deck-forensicgenetics/"
+      "deck": "https://raw.githubusercontent.com/deckyard/deck-forensicgenetics/main/deck.json",
+      "homepage": "https://github.com/deckyard/deck-forensicgenetics",
+      "manual": "https://deckyard.github.io/deck-forensicgenetics/"
     },
     "authors": [
-      "mplx <jennifer@mplx.dev>"
+      "mplx <mplx@jennifer-lang.dev>"
     ],
     "keywords": [
       "forensics",

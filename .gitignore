@@ -5,3 +5,7 @@ site/
 dist/
 *.tar.gz
 *.tar.gz.sha256
+vendor/
+.jennifer-src/
+.ci-fixtures/
+.jfmt-*.tmp

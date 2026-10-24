@@ -1,7 +1,7 @@
-# Grimoire book configuration for the @jennifer/forensicgenetics documentation.
+# Grimoire book configuration for the @deckyard/forensicgenetics documentation.
 
 [book]
-title = "@jennifer/forensicgenetics"
+title = "@deckyard/forensicgenetics"
 description = "Forensic and statistical genetics for Jennifer: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers."
 language = "en"
 src = "docs"
@@ -18,9 +18,10 @@ navPosition = "left"
 tocPosition = "right"
 tocDepth = 3
 sectionNumbers = true
-repoUrl = "https://github.com/jennifer-language/deck-forensicgenetics"
+repoUrl = "https://github.com/deckyard/deck-forensicgenetics"
 repoLabel = "Source"
-editUrl = "https://github.com/jennifer-language/deck-forensicgenetics/edit/main/docs/{path}"
+editUrl = "https://github.com/deckyard/deck-forensicgenetics/edit/main/docs/{path}"
+footer = 'Part of <a href="https://github.com/deckyard">Deckyard</a>, community decks for <a href="https://jennifer-lang.dev/">Jennifer</a>. Rendered with <a href="https://grimoire.jennifer-lang.dev/">Grimoire</a>.'
 
 [highlight]
 enabled = true
