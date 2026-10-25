@@ -1,7 +1,7 @@
 {
   "package": {
     "name": "@deckyard/forensicgenetics",
-    "version": "0.2.0-dev",
+    "version": "0.2.0",
     "description": "Forensic and statistical genetics: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers.",
     "license": "LGPL-3.0-only",
     "urls": {

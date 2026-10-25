@@ -159,7 +159,12 @@ def arity(args):
             count += 1
     return count
 
-docs = sorted(glob.glob('docs/**/*.md', recursive=True)) + ['README.md']
+docs = sorted(glob.glob('docs/**/*.md', recursive=True))
+if os.path.exists('README.md'):
+    docs.append('README.md')
+else:
+    # a checkout without one usually means it was never committed
+    note('README.md', "missing - every deck needs one (is it committed?)")
 ns_alt = '|'.join(sorted(map(re.escape, namespaces), key=len, reverse=True))
 
 # ---- 1 + 2: phantom references and arity ---------------------------------
