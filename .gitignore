@@ -9,3 +9,4 @@ vendor/
 .jennifer-src/
 .ci-fixtures/
 .jfmt-*.tmp
+.docblocks-*/
