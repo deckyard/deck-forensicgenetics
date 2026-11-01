@@ -120,12 +120,12 @@ about tenfold. Set published rates with `kinship.withLocusRate`.
 
 `align` computes a band around the diagonal, so for near-identical sequences
 (a haplotype against its own reference) the cost is roughly linear in the
-region length. Measured: 342 bp in 0.08 s, the ~1.1 kb control region in
-0.29 s, 1600 bp in 0.39 s, all within 50 MB; 14.6 times the length took 15.7
-times as long, up to the cap. Divergent sequences widen the band towards the
+region length. Measured: 342 bp in 0.06 s, the ~1.1 kb control region in
+0.2 s, 1600 bp in 0.3 s, all within 50 MB; 14.6 times the length took about
+16 times as long, up to the cap. Divergent sequences widen the band towards the
 full quadratic matrix. `align` refuses a region longer than
 `lineage.MAX_ALIGN_LENGTH` (5000 bases); at that cap a near-identical pair
-takes about 1.2 s.
+takes about 0.9 s.
 
 An eight-locus pedigree LR with four typed people takes about 0.1 s, and
 peeling memory does not grow with pedigree size.

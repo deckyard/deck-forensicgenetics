@@ -33,6 +33,7 @@ use lists;
 use stats;
 use strings;
 use convert;
+use regex;
 
 /**
  * The one-sided confidence level `lineageMatchProbability` uses.
@@ -194,6 +195,45 @@ func isBase(ch as string) {
     return strings.indexOf("ACGTURYSWKMBDHVN", $ch) >= 0;
 }
 
+# A whole designation: optional reference base, position, optional insertion
+# index, then one IUPAC base or a deletion mark. The ranges are checked in code.
+def const DESIGNATION as string init '^[ACGTURYSWKMBDHVN]?([0-9]{1,6})' +
+    '(?:\.([0-9]{1,4}))?([ACGTURYSWKMBDHVN]|DEL|-)$';
+
+# quickDifference parses a well-formed, upper-cased designation with one
+# anchored match. Its result has kind "" when the designation needs the full
+# scan in `parseDifference`: malformed, out of range, or an error to report.
+func quickDifference(t as string) {
+    def none as Difference init Difference{position: 0, insertion: 0, base: "", kind: ""};
+    def m as regex.Match init regex.find(DESIGNATION, $t);
+    if ($m.start != 0) {
+        return $none;
+    }
+    def position as int init convert.toInt($m.groups[0]);
+    def insertion as int init 0;
+    if (len($m.groups[1]) > 0) {
+        $insertion = convert.toInt($m.groups[1]);
+        if ($insertion < 1) {
+            return $none;
+        }
+    }
+    def rest as string init $m.groups[2];
+    if ($position < 1) {
+        return $none;
+    }
+    if ($rest == "D" or $rest == "DEL" or $rest == "-") {
+        if ($insertion > 0) {
+            return $none;
+        }
+        return Difference{position: $position, insertion: 0, base: "", kind: "del"};
+    }
+    def kind as string init "sub";
+    if ($insertion > 0) {
+        $kind = "ins";
+    }
+    return Difference{position: $position, insertion: $insertion, base: $rest, kind: $kind};
+}
+
 /**
  * Parse one difference designation in rCRS nomenclature.
  *
@@ -209,6 +249,12 @@ export func parseDifference(text as string) {
     def t as string init strings.upper(strings.trim($text));
     if (len($t) == 0) {
         fail("empty difference designation");
+    }
+    # Most designations are well formed; anything the fast path does not take
+    # goes through the scan below, which owns every error message.
+    def quick as Difference init quickDifference($t);
+    if (len($quick.kind) > 0) {
+        return $quick;
     }
     def ch as list of string init strings.chars($t);
     def i as int init 0;
@@ -515,13 +561,12 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
     # them by assignment instead - prev/cur/spare - deep-copies a full-width
     # row on every pass, which is O(n) work per row where the band needs only
     # O(w), and quadratic across the whole alignment.
-    def rows as list of list of int init [];
-    for (def k in 0..2) {
-        def blank as list of int init [];
-        for (def j in 0..($n + 2)) {
-            $blank[] = NEG;
-        }
-        $rows[] = $blank;
+    # The two live score rows share one flat list: row k starts at k * width.
+    # $p is the row just finished, $q the one being filled.
+    def width as int init $n + 2;
+    def rows as list of int init [];
+    for (def j in 0..(2 * $width)) {
+        $rows[] = NEG;
     }
     def p as int init 0;
     def dirs as list of bytes init [];
@@ -529,16 +574,18 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
     def firstHi as int init math.min($n, $w);
     def firstRow as bytes;
     $firstRow[] = DIR_DIAG;
-    $rows[$p][0] = 0;
+    $rows[0] = 0;
     for (def j in 1..($firstHi + 1)) {
-        $rows[$p][$j] = $j * GAP;
+        $rows[$j] = $j * GAP;
         $firstRow[] = DIR_LEFT;
     }
-    $rows[$p][$firstHi + 1] = NEG;
+    $rows[$firstHi + 1] = NEG;
     $dirs[] = $firstRow;
     $los[] = 0;
     for (def i in 1..($m + 1)) {
         def q as int init 1 - $p;
+        def po as int init $p * $width;
+        def qo as int init $q * $width;
         def lo as int init math.max(0, $i - $w);
         def hi as int init math.min($n, $i + $w);
         def base as int init $rb[$i - 1];
@@ -547,15 +594,17 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
         if ($lo > 0) {
             # Guard the cell just left of the band: the next row reads it as its
             # diagonal, and it must not see a value two rows stale.
-            $rows[$q][$lo - 1] = NEG;
+            $rows[$qo + $lo - 1] = NEG;
         } else {
-            $rows[$q][0] = $i * GAP;
+            $rows[$qo] = $i * GAP;
             $moves[] = DIR_UP;
             $left = $i * GAP;
         }
-        for (def j in math.max(1, $lo)..($hi + 1)) {
-            def up as int init $rows[$p][$j];
-            def diag as int init $rows[$p][$j - 1];
+        def from as int init math.max(1, $lo);
+        # Each cell's `up` is the next cell's `diag`, so it is read once.
+        def diag as int init $rows[$po + $from - 1];
+        for (def j in $from..($hi + 1)) {
+            def up as int init $rows[$po + $j];
             def best as int init $diag + MISMATCH;
             if ($base == $sb[$j - 1]) {
                 $best = $diag + MATCH;
@@ -573,10 +622,11 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
                 $move = DIR_LEFT;
             }
             $moves[] = $move;
-            $rows[$q][$j] = $best;
+            $rows[$qo + $j] = $best;
             $left = $best;
+            $diag = $up;
         }
-        $rows[$q][$hi + 1] = NEG;
+        $rows[$qo + $hi + 1] = NEG;
         $dirs[] = $moves;
         $los[] = $lo;
         $p = $q;
