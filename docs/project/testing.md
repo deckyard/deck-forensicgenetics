@@ -14,7 +14,7 @@ jennifer test src/pedigree_test.j --filter='.*Peeling.*'
 jennifer test src/kinship_test.j --format=tap
 ```
 
-181 tests across four overlays. Statement coverage of `forensicgenetics.j` is
+187 tests across four overlays. Statement coverage of `forensicgenetics.j` is
 99.2%; the two uncovered lines are the zero-RMP guards in the likelihood-ratio
 functions, which only a product underflowing to zero reaches.
 
@@ -54,6 +54,12 @@ pedigree LR reproduces the closed form, to a relative tolerance of 1e-9, for:
 | grandparent through an untyped parent | `kinship.GRANDPARENT` |
 | aunt through an untyped father | `kinship.AVUNCULAR` |
 | trio against an unrelated-man alternative | `kinship.paternityIndexWith(mother, child, allegedFather, db, kinship.NO_MUTATION)` |
+| full siblings on an `N = 20` table with an allele at its `5/(2N)` floor | `kinship.FULL_SIBLINGS`, and the closed form `1/4 + 1/(8 p)` |
+
+The agreement holds wherever `pedigree.j` returns a value: a locus whose
+observed, floored frequencies sum past 1 throws instead, since rescaling them
+would move a floored allele below its floor and break the agreement, and
+keeping them would make an untyped founder's prior sum to more than 1.
 
 Other asserted invariants:
 
