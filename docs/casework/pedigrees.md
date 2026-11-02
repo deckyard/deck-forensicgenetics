@@ -83,9 +83,12 @@ def logL as float init pedigree.log10PedigreeLikelihood($ped, $profiles, $db);
 
 `$genotypes` maps member id to `Genotype` at one locus; `$profiles` maps member
 id to `Profile`. Members without an entry are untyped and summed out; ids that
-are not members are ignored. A locus is used if the table covers it and at
-least one member is typed there. `pedigreeLikelihood` underflows on a long
-panel; use the log form or a ratio.
+are not members are ignored. A locus is used if at least one member is typed
+there; a typed locus the table does not cover throws, as in
+`randomMatchProbability`, because dropping it could hide an impossible
+transmission. Narrow the profiles with `forensicgenetics.restrict` to leave a
+locus out on purpose. `pedigreeLikelihood` underflows on a long panel; use the
+log form or a ratio.
 
 ## The likelihood ratio
 

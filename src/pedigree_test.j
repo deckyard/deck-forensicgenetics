@@ -450,6 +450,97 @@ func testATrueAncestorCycleIsStillCaught() {
     testing.assertThrows("selfAncestor", "pedigree");
 }
 
+# tinyTable has N = 20, so the floor is 5/40 = 0.125 and allele 10, listed at
+# 0.05, floors up to it. The floored frequencies then sum to 1.075.
+func tinyTable() {
+    return forensics.withLocus(
+        forensics.db("tiny"),
+        "L",
+        20,
+        {"10": 0.05, "11": 0.2, "12": 0.3, "13": 0.45});
+}
+
+func testAFlooredAlleleStillAgreesWithKinship() {
+    # Siblings 10/11 and 10/12 against unrelated, with p10 at its floor:
+    #   LR = k0 + k1 (p12 / 2) / (2 p10 p12) = 1/4 + 1/(8 p10) = 0.25 + 1 = 1.25
+    # Only 10, 11 and 12 are observed, so the floored sum is 0.625 and the
+    # lumped class carries the rest; the floor is in force and both modules
+    # must still agree.
+    def db as forensics.FrequencyDb init tinyTable();
+    def profiles as map of string to forensics.Profile init {
+        "A": one("A", "10", "11"),
+        "B": one("B", "10", "12")
+    };
+    def viaPeeling as float init pedigreeLR(
+        siblingPedigree(),
+        unrelatedPair("A", "B"),
+        $profiles,
+        $db);
+    near($viaPeeling, 1.25);
+    near(
+        $viaPeeling,
+        kinship.kinshipLR($profiles["A"], $profiles["B"], kinship.FULL_SIBLINGS, $db));
+}
+
+func flooredSumPastOne() {
+    # A typed bystander C shows the 13 too, so every allele is observed and
+    # the floored frequencies sum to 1.075. Rescaling them to 1 would put p10
+    # at 0.125/1.075, under the NRC II floor, and give 1.325 where kinship.j
+    # gives 1.25; keeping them makes an untyped founder's prior sum to
+    # 1.075^2 instead of 1, so the ratio would depend on how many untyped
+    # people each hypothesis names. The locus has no honest answer.
+    def profiles as map of string to forensics.Profile init {
+        "A": one("A", "10", "11"),
+        "B": one("B", "10", "12"),
+        "C": one("C", "13", "13")
+    };
+    pedigreeLR(
+        withFounder(siblingPedigree(), "C", "m"),
+        withFounder(unrelatedPair("A", "B"), "C", "m"),
+        $profiles,
+        tinyTable());
+}
+
+func testAFlooredSumPastOneIsRefusedNotRescaled() {
+    testing.assertThrows("flooredSumPastOne", "pedigree");
+    def caught as string init "";
+    try {
+        flooredSumPastOne();
+    } catch (e) {
+        $caught = $e.message;
+    }
+    testing.assertContains($caught, "sum to 1.075");
+}
+
+func likelihoodOverAnUncoveredLocus() {
+    def profiles as map of string to forensics.Profile init {
+        "A": forensics.profile("A", [gt("10", "11"), forensics.genotype("X", "10", "10")])
+    };
+    pedigreeLikelihood(withFounder(pedigree("p"), "A", "m"), $profiles, fixture());
+}
+
+func lrOverAnUncoveredLocus() {
+    def profiles as map of string to forensics.Profile init {
+        "A": forensics.profile("A", [gt("10", "10"), forensics.genotype("X", "10", "10")]),
+        "B": forensics.profile("B", [gt("10", "10"), forensics.genotype("X", "12", "13")])
+    };
+    pedigreeLR(siblingPedigree(), unrelatedPair("A", "B"), $profiles, fixture());
+}
+
+func testAnUncoveredTypedLocusThrowsInsteadOfBeingDropped() {
+    # At X the two could not be siblings of a 10/10 - that evidence must not
+    # vanish because the table happens to lack the locus.
+    testing.assertThrows("likelihoodOverAnUncoveredLocus", "pedigree");
+    testing.assertThrows("lrOverAnUncoveredLocus", "pedigree");
+    # pedigreeLoci remains the query that says what the table can use.
+    def profiles as map of string to forensics.Profile init {
+        "A": forensics.profile("A", [gt("10", "11"), forensics.genotype("X", "10", "10")])
+    };
+    testing.assertEqual(
+        pedigreeLoci(withFounder(pedigree("p"), "A", "m"), $profiles, fixture()),
+        ["L"]);
+}
+
 # --- documented edge cases with no assertion yet ----------------------------
 
 func emptyId() {

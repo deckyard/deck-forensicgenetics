@@ -521,14 +521,22 @@ func buildFrame(
         $freq[] = $p;
         $total = $total + $p;
     }
-    # The observed alleles' floored frequencies can overshoot 1. Rescale rather
-    # than carry a negative lumped class; otherwise the leftover mass becomes
-    # the lumped allele standing for everything nobody showed.
-    if ($total >= 1.0) {
-        for (def i in 0..len($freq)) {
-            $freq[$i] = $freq[$i] / $total;
-        }
-    } else {
+    # The leftover mass becomes the lumped allele standing for everything
+    # nobody showed. On a small table the observed alleles' floored
+    # frequencies can overshoot 1, and then there is no distribution to sum an
+    # untyped member over: kept as they are, an untyped founder's prior sums
+    # to more than 1 and the ratio comes to depend on how many untyped people
+    # each hypothesis names; rescaled to sum to 1, a floored allele drops back
+    # below its 5/(2N) floor and this module stops agreeing with kinship.j on
+    # the same pair. Neither is an answer, so the locus is refused.
+    if ($total > 1.0) {
+        def n as int init forensics.sampleSize($db, $locus);
+        fail("locus '" + $locus + "': the observed alleles' floored frequencies sum to {$total}," +
+            " past 1, so there is no distribution to sum untyped members over - the table" +
+            " (N = {$n}) is too small for this pedigree at this locus; leave the locus out" +
+            " with forensics.restrict, or use a larger table");
+    }
+    if ($total < 1.0) {
         $freq[] = 1.0 - $total;
     }
     def gi as list of int init [];
@@ -963,6 +971,39 @@ export func pedigreeLoci(
     return $out;
 }
 
+# requireCovered throws when a member is typed at a locus the database does
+# not cover. Dropping it would hide whatever that locus says about the
+# pedigree - an impossible transmission, most dangerously - behind a figure
+# built from the others, with no sign in the output. The caller narrows the
+# profiles with forensics.restrict if the omission is deliberate.
+func requireCovered(
+    ped as Pedigree,
+    profiles as map of string to forensics.Profile,
+    db as forensics.FrequencyDb) {
+    for (def id in $ped.members) {
+        if (maps.has($profiles, $id)) {
+            def locus as string init uncoveredLocus($profiles[$id], $db);
+            if (len($locus) > 0) {
+                fail("member '" + $id + "' of pedigree '" + $ped.name + "' is typed at locus '" +
+                    $locus + "', which frequency database '" + $db.name + "' does not cover;" +
+                    " it will not be dropped silently - narrow the profiles with" +
+                    " forensics.restrict if that is intended");
+            }
+        }
+    }
+}
+
+# uncoveredLocus names the first locus of a profile the database lacks, or ""
+# when it covers them all.
+func uncoveredLocus(p as forensics.Profile, db as forensics.FrequencyDb) {
+    for (def locus in forensics.profileLoci($p)) {
+        if (not forensics.hasLocus($db, $locus)) {
+            return $locus;
+        }
+    }
+    return "";
+}
+
 # genotypesAt gathers the members typed at one locus.
 func genotypesAt(ped as Pedigree, profiles as map of string to forensics.Profile, locus as string) {
     def out as map of string to forensics.Genotype init {};
@@ -982,13 +1023,15 @@ func genotypesAt(ped as Pedigree, profiles as map of string to forensics.Profile
  * @param profiles {map of string to Profile} member id -> that member's profile
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood
- * @throws {Error} kind "pedigree" if no locus is usable, or if the pedigree is
- *   malformed or looped
+ * @throws {Error} kind "pedigree" if no locus is usable, if a member is typed
+ *   at a locus the database does not cover, or if the pedigree is malformed
+ *   or looped
  */
 export func pedigreeLikelihood(
     ped as Pedigree,
     profiles as map of string to forensics.Profile,
     db as forensics.FrequencyDb) {
+    requireCovered($ped, $profiles, $db);
     def loci as list of string init pedigreeLoci($ped, $profiles, $db);
     if (len($loci) == 0) {
         fail("pedigree '" + $ped.name +
@@ -1015,6 +1058,7 @@ export func log10PedigreeLikelihood(
     ped as Pedigree,
     profiles as map of string to forensics.Profile,
     db as forensics.FrequencyDb) {
+    requireCovered($ped, $profiles, $db);
     def loci as list of string init pedigreeLoci($ped, $profiles, $db);
     if (len($loci) == 0) {
         fail("pedigree '" + $ped.name +
@@ -1049,7 +1093,8 @@ export func log10PedigreeLikelihood(
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
  * @throws {Error} kind "pedigree" if the two pedigrees type different members,
- *   if no locus is usable, or if the denominator has likelihood zero
+ *   if a typed member carries a locus the database does not cover, if no
+ *   locus is usable, or if the denominator has likelihood zero
  */
 export func pedigreeLR(
     numerator as Pedigree,
@@ -1062,6 +1107,7 @@ export func pedigreeLR(
         fail("pedigrees '" + $numerator.name + "' and '" + $denominator.name +
             "' type different members, so their likelihoods are not comparable");
     }
+    requireCovered($numerator, $profiles, $db);
     def loci as list of string init pedigreeLoci($numerator, $profiles, $db);
     if (len($loci) == 0) {
         fail("no locus is both covered by the database and typed in a member");

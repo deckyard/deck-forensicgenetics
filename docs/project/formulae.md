@@ -191,8 +191,13 @@ peeled once per component and the results multiplied.
 
 Alleles no typed member shows are pooled into one class with their combined
 frequency; untyped members' alleles are exchangeable, so this is exact. If the
-observed alleles' floored frequencies sum to 1 or more, they are rescaled to
-sum to 1 and there is no lumped class.
+observed alleles' floored frequencies sum to exactly 1 there is no lumped
+class. If they sum past 1 (a small `N` with every allele observed) the locus
+throws: kept as they are, an untyped founder's prior would sum to more than 1
+and the ratio would depend on how many untyped people each hypothesis names;
+rescaled to 1, a floored allele would fall below its `5/(2N)` floor and the
+module would stop agreeing with `kinship.j`. Leave the locus out with
+`restrict`, or use a larger table.
 
 *Elston & Stewart (1971); the message-passing form is equivalent to the
 classical anterior/posterior recursion.*

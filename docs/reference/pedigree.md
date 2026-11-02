@@ -17,7 +17,11 @@ the [Cheatsheet](cheatsheet.md#pedigree).
 - Members without a genotype or profile are untyped and summed out; ids that
   are not members are ignored. A member with an empty profile is untyped.
 - `pedigreeLoci` lists, in database order, the loci the table covers and at
-  least one member is typed at. `pedigreeLR` uses the numerator's.
+  least one member is typed at. `pedigreeLR` uses the numerator's. A member
+  typed at a locus the table does not cover makes `pedigreeLikelihood`,
+  `log10PedigreeLikelihood` and `pedigreeLR` throw rather than drop it; narrow
+  the profiles with `forensicgenetics.restrict` to leave a locus out on
+  purpose.
 - Unconnected parts of a pedigree multiply.
 - Work per locus is `O(edges × G²)`, `G` being the number of genotype classes
   after lumping the alleles no typed member shows. Timings are in
@@ -38,6 +42,10 @@ Guide: [General pedigrees](../casework/pedigrees.md). Formulae:
 - an ancestor cycle (someone is their own ancestor)
 - a loop in the individual/family graph; a consanguineous mating is reported
   as a loop, not as an ancestor cycle
+- a typed member carrying a locus the table does not cover, in the panel
+  functions
+- a locus where the observed alleles' floored frequencies sum past 1, so
+  there is no distribution to sum untyped members over
 - an empty pedigree
 - a genotype recorded at a locus other than the one asked for
 - no usable locus
