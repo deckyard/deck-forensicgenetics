@@ -50,11 +50,12 @@ intend to rely on.
 ### Pooling populations is not an uncertain population
 
 `combineFrequencies` merges tables into one. When the inputs' frequencies
-differ, the merged table violates Hardy-Weinberg (the Wahlund effect), and the
-match probability computed from it is biased downwards, overstating the
-evidence. For "the donor was German or Austrian" use
+differ, the merged table violates Hardy-Weinberg (the Wahlund effect): it
+scores homozygous loci too rare, overstating the evidence, and heterozygous
+loci too common, understating it, so the error is not a conservative bound in
+either direction. For "the donor was German or Austrian" use
 `randomMatchProbabilityAcross`. In the test suite's example the two differ by a
-third at one locus, and the gap compounds across a profile. See
+third at one homozygous locus, and the gap compounds across a profile. See
 [Reference frequency data](../concepts/frequency-data.md#when-the-population-is-uncertain).
 
 ### Reading a published table is a separate deck

@@ -19,7 +19,7 @@
  * `withLocus`, or convert one with a reader deck (`@deckyard/strider` for
  * STRidER XML). For a donor whose population is uncertain use
  * `randomMatchProbabilityAcross`, not a table pooled with `combineFrequencies`,
- * which biases the RMP downwards.
+ * which mis-scores every locus the populations differ at.
  *
  * Sibling modules: `kinship.j` (pairwise LRs, paternity), `pedigree.j`
  * (whole-pedigree likelihoods), `lineage.j` (mtDNA and Y-STR).
@@ -312,10 +312,12 @@ func addObservedCounts(counts as map of string to float, lf as LocusFrequencies)
  * N is the sum of the inputs' N. Only loci every input carries are pooled;
  * call `loci` on the result to see which.
  *
- * A pooled table describes one merged population. Merging populations whose
- * frequencies differ leaves it short of heterozygotes (the Wahlund effect), so
- * `randomMatchProbability` on it is biased downwards and overstates the
- * evidence. For "the donor was German or Austrian" use
+ * A pooled table describes one merged population. A mixture of populations
+ * whose frequencies differ has more homozygotes and fewer heterozygotes than
+ * the pooled frequencies predict (the Wahlund effect), so
+ * `randomMatchProbability` on the pooled table scores homozygous loci too
+ * rare and heterozygous loci too common; the error is not conservative in
+ * either direction. For "the donor was German or Austrian" use
  * `randomMatchProbabilityAcross`.
  * @param dbs {list of FrequencyDb} the tables to pool; at least one
  * @param name {string} the dataset label for the pooled table
@@ -752,7 +754,8 @@ export func matchLikelihoodRatio(fdb as FrequencyDb, p as Profile, theta as floa
  * The law of total probability over the candidate populations:
  * `P(G) = sum(w_i * P(G | population i))`, each term `randomMatchProbability`
  * in its own table. A table pooled with `combineFrequencies` averages allele
- * frequencies instead of genotype probabilities and gives a smaller number.
+ * frequencies instead of genotype probabilities and gives a different number
+ * at every locus the populations differ at.
  *
  * The weights are the priors that the donor came from each population. They
  * must be non-negative and sum to 1 within 0.001. Every table must cover every

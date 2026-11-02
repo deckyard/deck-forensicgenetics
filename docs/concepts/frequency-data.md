@@ -105,10 +105,13 @@ forensicgenetics.combineFrequencies([$de, $at], "DE+AT");
 
 It sums observed allele counts (`p * 2N`) over the loci every input carries, and
 describes one merged population. Pooling averages allele frequencies where the
-`Across` form averages genotype probabilities. A merged population whose parts
-differ has fewer heterozygotes than Hardy-Weinberg predicts (the Wahlund
-effect), so the RMP from a pooled table is biased downwards and overstates the
-evidence.
+`Across` form averages genotype probabilities, and the two differ whenever the
+populations do: a mixture of populations has more homozygotes and fewer
+heterozygotes than Hardy-Weinberg predicts from the pooled frequencies (the
+Wahlund effect). So a pooled table scores a homozygous locus too rare,
+overstating the evidence, and a heterozygous locus too common, understating
+it; across a profile the error runs in both directions at once and is not a
+conservative bound in either.
 
 Two populations, one locus, equal sample sizes:
 
