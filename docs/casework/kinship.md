@@ -67,9 +67,12 @@ kinship.pairLoci($db, $a, $b);                    # the loci used
 
 `kinshipLR` tests against `UNRELATED`; `kinshipLRAgainst` against any
 alternative, which is the form most real questions take ("full or half
-siblings?"). Both multiply over the loci both profiles and the table share, and
-skip the rest without complaint, unlike `randomMatchProbability`. No shared
-locus throws. `kinshipLRAt` throws if the alternative gives the observed pair
+siblings?"). Both multiply over the loci both profiles carry. A locus only one
+profile carries is skipped, since nothing can be computed there; a locus both
+carry but the table does not cover throws, as in `randomMatchProbability`,
+because dropping it could hide an exclusion. Narrow the profiles with
+`forensicgenetics.restrict` to leave a locus out on purpose. No shared locus
+throws. `kinshipLRAt` throws if the alternative gives the observed pair
 probability zero.
 
 ## Closed forms

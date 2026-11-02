@@ -383,7 +383,7 @@ export func jointGenotypeProbability(
         fail("cannot pair a genotype at '" + $ga.locus + "' with one at '" + $gb.locus + "'");
     }
     def both as float init 0.0;
-    if ($ga.a == $gb.a and $ga.b == $gb.b) {
+    if (sameGenotype($ga, $gb)) {
         $both = genotypeProbability($db, $ga);
     }
     return $rel.k0 * genotypeProbability($db, $ga) * genotypeProbability($db, $gb) +
@@ -415,15 +415,49 @@ export func kinshipLRAt(
     return jointGenotypeProbability($db, $ga, $gb, $rel) / $under;
 }
 
-# sharedLoci returns the loci two profiles and the database all cover.
-func sharedLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as forensics.Profile) {
+# sameGenotype compares two genotypes as unordered allele pairs. `genotype`
+# canonicalises the order, but a Genotype literal need not, and the k2 term
+# must not miss a match over the order its alleles were written in.
+func sameGenotype(x as forensics.Genotype, y as forensics.Genotype) {
+    return ($x.a == $y.a and $x.b == $y.b) or ($x.a == $y.b and $x.b == $y.a);
+}
+
+# commonLoci returns the loci both profiles carry, whether or not the database
+# covers them.
+func commonLoci(a as forensics.Profile, b as forensics.Profile) {
     def out as list of string init [];
     for (def locus in $a.loci) {
-        if (maps.has($b.loci, $locus) and forensics.hasLocus($db, $locus)) {
+        if (maps.has($b.loci, $locus)) {
             $out[] = $locus;
         }
     }
     return $out;
+}
+
+# sharedLoci returns the loci two profiles and the database all cover.
+func sharedLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as forensics.Profile) {
+    def out as list of string init [];
+    for (def locus in commonLoci($a, $b)) {
+        if (forensics.hasLocus($db, $locus)) {
+            $out[] = $locus;
+        }
+    }
+    return $out;
+}
+
+# requireCovered throws when the people are all typed at a locus the database
+# does not cover. Dropping that locus would hide whatever it says - most
+# dangerously an exclusion - behind a ratio built from the others, with no
+# sign in the output. The caller narrows the profiles with forensics.restrict
+# if the omission is deliberate, so it is a decision on record.
+func requireCovered(db as forensics.FrequencyDb, loci as list of string, who as string) {
+    for (def locus in $loci) {
+        if (not forensics.hasLocus($db, $locus)) {
+            fail($who + " are all typed at locus '" + $locus + "', which frequency database '" +
+                $db.name + "' does not cover; it will not be dropped silently - narrow the" +
+                " profiles with forensics.restrict if that is intended");
+        }
+    }
 }
 
 /**
@@ -441,14 +475,17 @@ export func pairLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as f
 /**
  * The kinship likelihood ratio for a relationship against `UNRELATED`.
  *
- * The product of `kinshipLRAt` over `pairLoci`; loci outside that set are
- * ignored. Above 1 favours the relationship.
+ * The product of `kinshipLRAt` over `pairLoci`. A locus only one profile
+ * carries is skipped; a locus both carry but the database does not cover
+ * throws, since dropping it could hide an exclusion. Above 1 favours the
+ * relationship.
  * @param a {Profile} one person's profile
  * @param b {Profile} the other's
  * @param rel {Relationship} the relationship to test
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
- * @throws {Error} kind "kinship" if the profiles and database share no locus
+ * @throws {Error} kind "kinship" if the profiles share no locus, or share one
+ *   the database does not cover
  */
 export func kinshipLR(
     a as forensics.Profile,
@@ -467,8 +504,9 @@ export func kinshipLR(
  * @param alt {Relationship} the denominator hypothesis
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
- * @throws {Error} kind "kinship" if the profiles and database share no locus,
- *   or if the alternative gives an observed pair probability zero
+ * @throws {Error} kind "kinship" if the profiles share no locus, share one the
+ *   database does not cover, or if the alternative gives an observed pair
+ *   probability zero
  */
 export func kinshipLRAgainst(
     a as forensics.Profile,
@@ -476,11 +514,11 @@ export func kinshipLRAgainst(
     rel as Relationship,
     alt as Relationship,
     db as forensics.FrequencyDb) {
-    def loci as list of string init sharedLoci($db, $a, $b);
+    def loci as list of string init commonLoci($a, $b);
     if (len($loci) == 0) {
-        fail("profiles '" + $a.id + "' and '" + $b.id +
-            "' share no locus the frequency database covers");
+        fail("profiles '" + $a.id + "' and '" + $b.id + "' share no locus");
     }
+    requireCovered($db, $loci, "profiles '" + $a.id + "' and '" + $b.id + "'");
     def out as float init 1.0;
     for (def locus in $loci) {
         $out = $out * kinshipLRAt($db, $a.loci[$locus], $b.loci[$locus], $rel, $alt);
@@ -561,27 +599,60 @@ export func trioLoci(
     child as forensics.Profile,
     father as forensics.Profile) {
     def out as list of string init [];
-    for (def locus in $child.loci) {
-        if (maps.has($mother.loci, $locus) and maps.has($father.loci, $locus) and
-            forensics.hasLocus($db, $locus)) {
+    for (def locus in commonTrioLoci($mother, $child, $father)) {
+        if (forensics.hasLocus($db, $locus)) {
             $out[] = $locus;
         }
     }
     return $out;
 }
 
+# commonTrioLoci returns the loci all three profiles carry, in the child's
+# order, whether or not the database covers them.
+func commonTrioLoci(
+    mother as forensics.Profile,
+    child as forensics.Profile,
+    father as forensics.Profile) {
+    def out as list of string init [];
+    for (def locus in $child.loci) {
+        if (maps.has($mother.loci, $locus) and maps.has($father.loci, $locus)) {
+            $out[] = $locus;
+        }
+    }
+    return $out;
+}
+
+# coveredTrioLoci is trioLoci with the guard that every locus the three share
+# is in the database - a shared locus the table lacks is never dropped.
+func coveredTrioLoci(
+    db as forensics.FrequencyDb,
+    mother as forensics.Profile,
+    child as forensics.Profile,
+    father as forensics.Profile) {
+    def loci as list of string init commonTrioLoci($mother, $child, $father);
+    if (len($loci) == 0) {
+        fail("the mother, child and alleged father share no locus");
+    }
+    requireCovered(
+        $db,
+        $loci,
+        "profiles '" + $mother.id + "', '" + $child.id + "' and '" + $father.id + "'");
+    return $loci;
+}
+
 /**
  * The combined paternity index (CPI) for a trio, under `DEFAULT_MUTATION`.
  *
- * The product of `paternityIndexAt` over `trioLoci`; loci outside that set
- * are ignored.
+ * The product of `paternityIndexAt` over `trioLoci`. A locus not all three
+ * profiles carry is skipped; a locus all three carry but the database does
+ * not cover throws, since dropping it could hide an exclusion.
  * @param mother {Profile} the mother's profile
  * @param child {Profile} the child's profile
  * @param allegedFather {Profile} the alleged father's profile
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the combined paternity index
- * @throws {Error} kind "kinship" if the trio and database share no locus, or on
- *   a maternal exclusion
+ * @throws {Error} kind "kinship" if the trio shares no locus, shares one the
+ *   database does not cover, or on a maternal exclusion
  */
 export func paternityIndex(
     mother as forensics.Profile,
@@ -600,8 +671,8 @@ export func paternityIndex(
  * @param db {FrequencyDb} the reference frequencies
  * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the combined paternity index
- * @throws {Error} kind "kinship" if the trio and database share no locus, or on
- *   a maternal exclusion
+ * @throws {Error} kind "kinship" if the trio shares no locus, shares one the
+ *   database does not cover, or on a maternal exclusion
  */
 export func paternityIndexWith(
     mother as forensics.Profile,
@@ -609,10 +680,7 @@ export func paternityIndexWith(
     allegedFather as forensics.Profile,
     db as forensics.FrequencyDb,
     model as MutationModel) {
-    def loci as list of string init trioLoci($db, $mother, $child, $allegedFather);
-    if (len($loci) == 0) {
-        fail("the trio and the frequency database share no locus");
-    }
+    def loci as list of string init coveredTrioLoci($db, $mother, $child, $allegedFather);
     def out as float init 1.0;
     for (def locus in $loci) {
         $out = $out *
@@ -634,7 +702,8 @@ export func paternityIndexWith(
  * @param allegedFather {Profile} the alleged father's profile
  * @param db {FrequencyDb} the reference frequencies
  * @return {list of string} the inconsistent locus names
- * @throws {Error} kind "kinship" on a maternal exclusion
+ * @throws {Error} kind "kinship" if the trio shares no locus, shares one the
+ *   database does not cover, or on a maternal exclusion
  */
 export func inconsistentLoci(
     mother as forensics.Profile,
@@ -642,7 +711,7 @@ export func inconsistentLoci(
     allegedFather as forensics.Profile,
     db as forensics.FrequencyDb) {
     def out as list of string init [];
-    for (def locus in trioLoci($db, $mother, $child, $allegedFather)) {
+    for (def locus in coveredTrioLoci($db, $mother, $child, $allegedFather)) {
         def pi as float init paternityIndexAt(
             $db,
             $mother.loci[$locus],

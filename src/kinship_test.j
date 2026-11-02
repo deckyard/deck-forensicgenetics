@@ -462,6 +462,78 @@ func testPriorMustBeStrictlyInsideTheUnitInterval() {
     testing.assertThrows("priorOfZero", "kinship");
 }
 
+# --- regressions from the validation audit ----------------------------------
+
+# A locus the people are all typed at but the table does not cover must not be
+# dropped: it may be the one locus that excludes. Here X is exactly that - a
+# 13/13 man cannot give the child its 12 - and the table knows only L.
+func trioAtL(ida as string, idb as string, idc as string) {
+    def m as forensics.Profile init forensics.profile(
+        $ida,
+        [gt("10", "11"), forensics.genotype("X", "10", "11")]);
+    def c as forensics.Profile init forensics.profile(
+        $idb,
+        [gt("10", "12"), forensics.genotype("X", "10", "12")]);
+    def f as forensics.Profile init forensics.profile(
+        $idc,
+        [gt("12", "13"), forensics.genotype("X", "13", "13")]);
+    return [$m, $c, $f];
+}
+
+func paternityOverAnUncoveredLocus() {
+    def t as list of forensics.Profile init trioAtL("M", "C", "F");
+    paternityIndexWith($t[0], $t[1], $t[2], fixture(), NO_MUTATION);
+}
+
+func inconsistenciesOverAnUncoveredLocus() {
+    def t as list of forensics.Profile init trioAtL("M", "C", "F");
+    inconsistentLoci($t[0], $t[1], $t[2], fixture());
+}
+
+func kinshipOverAnUncoveredLocus() {
+    def t as list of forensics.Profile init trioAtL("M", "C", "F");
+    kinshipLR($t[1], $t[2], PARENT_CHILD, fixture());
+}
+
+func testAnUncoveredSharedLocusThrowsInsteadOfHidingAnExclusion() {
+    testing.assertThrows("paternityOverAnUncoveredLocus", "kinship");
+    testing.assertThrows("inconsistenciesOverAnUncoveredLocus", "kinship");
+    testing.assertThrows("kinshipOverAnUncoveredLocus", "kinship");
+    # The query functions still report what the table can use, so a caller
+    # can narrow the profiles deliberately and say so in the report.
+    def t as list of forensics.Profile init trioAtL("M", "C", "F");
+    testing.assertEqual(trioLoci(fixture(), $t[0], $t[1], $t[2]), ["L"]);
+    testing.assertEqual(pairLoci(fixture(), $t[1], $t[2]), ["L"]);
+    def keep as list of string init ["L"];
+    near(
+        paternityIndexWith(
+            forensics.restrict($t[0], $keep),
+            forensics.restrict($t[1], $keep),
+            forensics.restrict($t[2], $keep),
+            fixture(),
+            NO_MUTATION),
+        1.6666666666666667);
+}
+
+func testALocusOnlyOneSideCarriesIsStillSkipped() {
+    # Nothing is hidden when one profile simply has no genotype there.
+    def a as forensics.Profile init forensics.profile(
+        "A",
+        [gt("10", "10"), forensics.genotype("X", "10", "11")]);
+    def b as forensics.Profile init forensics.profile("B", [gt("10", "10")]);
+    near(kinshipLR($a, $b, FULL_SIBLINGS, fixture()), 30.25);
+}
+
+func testJointProbabilityIgnoresAlleleOrder() {
+    # A Genotype built as a literal rather than through genotype() may carry
+    # its alleles in either order; the k2 term must still recognise it.
+    def raw as forensics.Genotype init forensics.Genotype{locus: "L", a: "11", b: "10"};
+    near(jointGenotypeProbability(fixture(), gt("10", "11"), $raw, IDENTICAL), 0.04);
+    near(
+        jointGenotypeProbability(fixture(), gt("10", "11"), $raw, FULL_SIBLINGS),
+        jointGenotypeProbability(fixture(), gt("10", "11"), gt("10", "11"), FULL_SIBLINGS));
+}
+
 func testZeroRateNeverCountsSteps() {
     # With no mutation a changed allele has probability 0 before any step
     # count is attempted, so non-numeric designations do not throw.

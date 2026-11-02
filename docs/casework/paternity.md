@@ -27,7 +27,12 @@ kinship.trioLoci($db, $mother, $child, $allegedFather);   # the loci used
 ```
 
 The combined paternity index (CPI) is the product over the loci all three
-profiles and the table share. No shared locus throws.
+profiles carry. A locus one of them lacks is skipped; a locus all three carry
+but the table does not cover throws, because dropping it could hide an
+exclusion - the one locus where the alleged father cannot explain the child
+is exactly the one that must not vanish. Narrow the profiles with
+`forensicgenetics.restrict` to leave a locus out on purpose. No shared locus
+throws. `inconsistentLoci` follows the same rule.
 
 ## Probability of paternity
 

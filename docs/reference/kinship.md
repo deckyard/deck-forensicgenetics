@@ -16,7 +16,10 @@ and mutation constants, and struct fields are in the
   give equal LRs.
 - `kinshipLR` and `kinshipLRAgainst` multiply over `pairLoci`;
   `paternityIndex`, `paternityIndexWith` and `inconsistentLoci` over
-  `trioLoci`. Other loci are ignored.
+  `trioLoci`. A locus not every profile carries is skipped; one they all carry
+  but the table does not cover throws, so an exclusion cannot be dropped
+  unseen. Narrow the profiles with `forensicgenetics.restrict` to leave a
+  locus out on purpose.
 - `paternityIndex` uses `DEFAULT_MUTATION` (rate 0.002, decay 0.1, a
   placeholder). The model applies to the alleged father's transmission only.
 - `mutationProbability` counts `k = max(1, round(|value(s) - value(t)|))`
@@ -37,6 +40,7 @@ Formulae: [Formulae and sources](../project/formulae.md). Guides:
 - a step count between alleles that are not repeat counts, when the rate is
   above 0
 - a genotype pair, or a trio, at different loci
+- profiles sharing no locus, or sharing one the table does not cover
 - an alternative hypothesis giving the observed pair probability zero
   (`kinshipLRAt` and the functions built on it)
 - no shared locus for a pair or a trio
