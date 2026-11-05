@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for mixture.j. Run with `jennifer test mixture_test.j`.
 #
@@ -389,6 +389,117 @@ func impossibleDefence() {
     locusLR(fixture(), stain(["10", "11", "12"]), "L", $hp, unknownsOnly(1, 0.0), 0.0, 0.0);
 }
 
+# rareTable is n = 0 (no floor) with two alleles at 1e-5 at each of `loci` loci.
+func rareTable(loci as int) {
+    def out as forensics.FrequencyDb init forensics.db("rare");
+    for (def i in 0..$loci) {
+        $out = forensics.withLocus($out, "L{$i}", 0, {"10": 0.00001, "11": 0.00001, "12": 0.99998});
+    }
+    return $out;
+}
+
+func rareStain(loci as int) {
+    def obs as map of string to list of string init {};
+    for (def i in 0..$loci) {
+        $obs["L{$i}"] = ["10", "11"];
+    }
+    return forensics.mixture("E", $obs);
+}
+
+func rareSuspect(loci as int) {
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..$loci) {
+        $gs[] = forensics.genotype("L{$i}", "10", "11");
+    }
+    return forensics.profile("S", $gs);
+}
+
+func overflowingProduct() {
+    def hp as Hypothesis init hypothesis("Hp", [rareSuspect(40)], [0.0], 0, 0.0);
+    mixtureLR(rareTable(40), rareStain(40), $hp, unknownsOnly(1, 0.0), 0.0, 0.0);
+}
+
+func testProductPastTheFloatRangeThrowsAndNamesTheLog() {
+    # Single source, d = c = θ = 0: each locus LR is 1 / (2 · 1e-5 · 1e-5) = 5e9;
+    # 40 loci give 5e9^40 ≈ 9e388, past 1.8e308. log10 = 40 · (9 + log10 5).
+    testing.assertThrows("overflowingProduct", "mixture");
+    def hp as Hypothesis init hypothesis("Hp", [rareSuspect(40)], [0.0], 0, 0.0);
+    near(
+        log10MixtureLR(rareTable(40), rareStain(40), $hp, unknownsOnly(1, 0.0), 0.0, 0.0),
+        40.0 * (9.0 + math.log10(5.0)));
+}
+
+func unlistedAlleleWithoutFloor() {
+    # n = 0 table: "12" has no frequency and no 5/2N floor
+    evidenceProbability(
+        rareTable(1),
+        forensics.mixture("E", {"L0": ["10", "13"]}),
+        "L0",
+        unknownsOnly(1, 0.0),
+        [],
+        0.05,
+        0.0);
+}
+
+func typedWithOtherGenotype() {
+    # S is 12/13 in the hypothesis but 10/11 in `typed`
+    def h as Hypothesis init hypothesis("H", [person("S", "12", "13")], [0.0], 1, 0.0);
+    evidenceProbability(
+        fixture(),
+        stain(["10", "11"]),
+        "L",
+        $h,
+        [person("S", "10", "11")],
+        0.0,
+        0.0);
+}
+
+func typedWithOtherGenotypeSameLabels() {
+    # 11/12 against 10/12: every allele of the known is among the labels, so
+    # before the check this ran and conditioned θ on the wrong genotype
+    def h as Hypothesis init hypothesis("H", [person("S", "11", "12")], [0.0], 1, 0.0);
+    evidenceProbability(
+        fixture(),
+        stain(["10", "12"]),
+        "L",
+        $h,
+        [person("S", "10", "12")],
+        0.0,
+        0.1);
+}
+
+func tooManyCombinations() {
+    # 10 alleles at .09 plus the lumped class: 11 classes, 66 genotypes. Three
+    # unknowns under both hypotheses: 2 · C(68, 3) = 100232 per locus; 3 loci
+    # need 300696, past MAX_COMBINATIONS (250000).
+    def freqs as map of string to float init {};
+    def seen as list of string init [];
+    for (def i in 0..10) {
+        $freqs["{$i + 1}"] = 0.09;
+        $seen[] = "{$i + 1}";
+    }
+    def fdb as forensics.FrequencyDb init forensics.db("t");
+    def obs as map of string to list of string init {};
+    for (def l in 0..3) {
+        $fdb = forensics.withLocus($fdb, "L{$l}", 1000, $freqs);
+        $obs["L{$l}"] = $seen;
+    }
+    log10MixtureLR(
+        $fdb,
+        forensics.mixture("E", $obs),
+        unknownsOnly(3, 0.1),
+        unknownsOnly(3, 0.1),
+        0.05,
+        0.0);
+}
+
+func testCasesThatGaveWrongOrRuntimeErrorsThrowMixtureErrors() {
+    testing.assertThrows("unlistedAlleleWithoutFloor", "mixture");
+    testing.assertThrows("typedWithOtherGenotype", "mixture");
+    testing.assertThrows("typedWithOtherGenotypeSameLabels", "mixture");
+    testing.assertThrows("tooManyCombinations", "mixture");
+}
+
 func testZeroProbabilitiesThrowWhereTheRatioIsUndefined() {
     testing.assertThrows("logOfExclusion", "mixture");
     testing.assertThrows("impossibleDefence", "mixture");
@@ -489,13 +600,11 @@ func testOrderingsCountsDistinctPermutations() {
     testing.assertEqual(orderings([1, 2, 3]), 6);
 }
 
-func testNextComboVisitsEveryMultiset() {
-    # multisets of size 2 from 3 genotypes: C(3 + 2 - 1, 2) = 6
-    def combo as list of int init [0, 0];
-    def visited as int init 0;
-    while (len($combo) > 0) {
-        $visited = $visited + 1;
-        $combo = nextCombo($combo, 3);
-    }
-    testing.assertEqual($visited, 6);
+func testMultisetsCountsNonDecreasingTuples() {
+    # size 2 over 3 genotypes: 00 01 02 11 12 22
+    testing.assertEqual(multisets(3, 2), 6);
+    testing.assertEqual(multisets(5, 0), 1);
+    testing.assertEqual(multisets(7, 1), 7);
+    # 11 classes give 66 genotypes; C(68, 3) = 68 · 67 · 66 / 6 = 50116
+    testing.assertEqual(multisets(66, 3), 50116);
 }

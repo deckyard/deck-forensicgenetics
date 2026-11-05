@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # Familias mutation models and a silent allele on the trio of
 # examples/paternity.j: the D8S1179 inconsistency under each model, the
@@ -104,8 +104,8 @@ io.printf(
     "kinship.j stepwise ladder",
     kinship.paternityIndexAt($db, $m, $c, $f, kinship.mutationModel($rate, 0.1)));
 
-# The extended stepwise matrix is not stationary under the table's frequencies; PM fixes
-# that and keeps the expected rate.
+# The extended stepwise matrix is not stationary under the table's
+# frequencies; PM makes it stationary and keeps the expected rate.
 def la as mutation.LocusAlleles init mutation.locusAlleles($db, "D8S1179", [], 0.0);
 for (def i in [3, 4]) {
     def mm as mutation.MutationMatrix init mutation.mutationMatrix($specs[$i], $la);

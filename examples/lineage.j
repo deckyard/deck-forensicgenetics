@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # Lineage markers: rendering a sequence into rCRS-style difference
 # nomenclature, the conservative counting estimate for a haplotype, and Y-STR
@@ -18,8 +18,7 @@ import "../src/lineage.j" as lineage;
 # --- rendering a sequence into differences ----------------------------------
 
 # A synthetic 40 bp "region", numbered as if it began at position 300, with a
-# run of four Cs at 311-314 - the kind of homopolymer where indel placement
-# actually matters.
+# run of four Cs at 310-313: a homopolymer, where indel placement is ambiguous.
 def reference as string init "GTACGTTACGCCCCTAGGCATTACGGATCCAGTTACGATC";
 def sample as string init "GTACGTTACGCCCCCTAGGCATTACGGATTCAGTTACGATC";
 
@@ -50,13 +49,27 @@ io.printf(
 # Lineage markers do not multiply across loci: the whole haplotype is counted
 # once against a reference database. The deck supplies the estimator; the
 # count comes from whichever database was queried.
-io.printf("\nk       N       k/N          95%% upper bound   LR\n");
+# Header and rows share the column widths: 3, 6, 12, 17, 8, right-aligned.
+io.printf(
+    "\n%s|pad=3|align=right %s|pad=6|align=right %s|pad=12|align=right" +
+        " %s|pad=17|align=right %s|pad=8|align=right\n",
+    "k",
+    "N",
+    "k/N",
+    "95% upper bound",
+    "LR");
 for (def k in [0, 1, 2, 5]) {
     def n as int init 5000;
     def point as float init lineage.haplotypeFrequency($k, $n);
     def bound as float init lineage.lineageMatchProbability($k, $n);
     def lr as float init lineage.lineageLikelihoodRatio($k, $n);
-    io.printf("%d|pad=8 %d|pad=8 %f|prec=8 %f|prec=8 %f|prec=1\n", $k, $n, $point, $bound, $lr);
+    io.printf(
+        "%d|pad=3 %d|pad=6 %f|prec=8|pad=12 %f|prec=8|pad=17 %f|prec=1|pad=8\n",
+        $k,
+        $n,
+        $point,
+        $bound,
+        $lr);
 }
 
 io.printf("\nNote the k = 0 row: the point estimate is 0, which no database can\n");

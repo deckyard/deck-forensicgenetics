@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # Deficient paternity: the alleged father is unavailable, so the case is made
-# through his parents. This is the question `kinship.j` cannot answer - four
-# people at once, joined through an untyped man - and what peeling is for.
+# through his parents. `kinship.j` cannot answer it: four typed people joined
+# through an untyped man need peeling.
 #
 #   H1                              H2
 #     GF x GM                         GF   GM   (unrelated bystanders)
@@ -81,9 +81,8 @@ def profiles as map of string to forensics.Profile init {
 
 # --- the two hypotheses -----------------------------------------------------
 
-# H1: the child's father FA is the son of GF and GM. FA himself is untyped -
-# the whole point of the exercise - so peeling sums over every genotype he
-# could have had.
+# H1: the child's father FA is the son of GF and GM. FA is untyped, so
+# peeling sums over every genotype he could have.
 def h1 as pedigree.Pedigree init pedigree.pedigree("son of GF x GM");
 $h1 = pedigree.withFounder($h1, "GF", "m");
 $h1 = pedigree.withFounder($h1, "GM", "f");
@@ -128,10 +127,9 @@ io.printf("W (prior 0.5) = %f|prec=8\n", kinship.probabilityOfPaternity($lr));
 
 # --- what peeling buys ------------------------------------------------------
 
-# The pairwise machinery can only ask a much weaker question of the same data:
-# is the child a grandchild of GF? That throws away GM entirely, and with her
-# the constraint that the two grandparents must jointly explain the child's
-# paternal allele.
+# The pairwise LR asks a weaker question of the same data: is the child a
+# grandchild of GF? It ignores GM, and with her the constraint that both
+# grandparents jointly explain the child's paternal allele.
 io.printf(
     "\nfor contrast, the pairwise grandparent LR (GF vs CH alone) = %f|prec=2\n",
     kinship.kinshipLR($profiles["GF"], $profiles["CH"], kinship.GRANDPARENT, $db));

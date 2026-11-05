@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # Weir & Cockerham F-statistics over three population samples, and pairwise
 # genotypic linkage-disequilibrium tests within one of them.
@@ -15,10 +15,10 @@ use convert;
 import "../src/forensicgenetics.j" as forensics;
 import "../src/popstats.j" as popstats;
 
-# The other three loci follow fixed cycles shared by every population, so they
-# do not differ between populations. Person i gets the i mod 4 TH01 genotype,
-# D8S1179 by (i div 4) mod 3, and FGA and VWA by i mod 5 - the same index for
-# both, which ties them together.
+# D8S1179, FGA and VWA follow cycles shared by every population. Person i gets
+# TH01 genotype i mod 4 from the population's list, D8S1179 genotype
+# (i div 4) mod 3, and FGA and VWA genotype i mod 5 - one index for both, which
+# ties them together.
 def const D8 as list of list of string init [["13", "13"], ["13", "14"], ["14", "14"]];
 def const FGA as list of list of string init [
     ["21", "21"],

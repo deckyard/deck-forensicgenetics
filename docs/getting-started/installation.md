@@ -2,11 +2,11 @@
 
 ## Requirements
 
-Jennifer 0.25.0 or newer. Every source file declares the floor, and an older
+Jennifer 0.26.0 or newer. Every source file declares the floor, and an older
 interpreter refuses to load the deck:
 
 ```jennifer
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 ```
 
 The deck has no deck dependencies and runs on both `jennifer` and
@@ -17,10 +17,15 @@ The deck has no deck dependencies and runs on both `jennifer` and
 The manifest follows the [jvc deck
 specification](https://github.com/jennifer-language/jvc/blob/main/docs/deck-spec.md):
 a consumer vendors the deck's `src/` directory, without the `*_test.j`
-overlays, to `vendor/deckyard/forensicgenetics/`. Until
-[`jvc`](https://github.com/jennifer-language/jvc) does that for you, copy the
-files by hand; the `@scope/package` resolver reads a hand-built tree the same
-way.
+overlays, to `vendor/deckyard/forensicgenetics/`.
+[`jvc`](https://github.com/jennifer-language/jvc) does that:
+
+```sh
+jvc add @deckyard/forensicgenetics ">=0.3.0"
+jvc install
+```
+
+A tree copied by hand resolves the same way:
 
 ```
 your-project/
@@ -31,7 +36,7 @@ your-project/
         forensicgenetics.j
         kinship.j
         pedigree.j
-        lineage.j
+        ...                  # the other eight modules
 ```
 
 The entry file must sit at the root of `vendor/deckyard/forensicgenetics/`.
@@ -41,7 +46,7 @@ holds one directory `deckyard-forensicgenetics-<version>/` with `src/`, the
 manifest, `README.md` and `LICENSE`:
 
 ```sh
-v=0.2.0
+v=0.3.0
 mkdir -p vendor/deckyard/forensicgenetics
 tar -xzf deckyard-forensicgenetics-$v.tar.gz
 cp deckyard-forensicgenetics-$v/src/*.j vendor/deckyard/forensicgenetics/

@@ -14,13 +14,15 @@ ratios. For the population samples behind a table: Weir & Cockerham
 F-statistics (θ / F_ST) and a genotypic linkage-disequilibrium test. For
 reporting: the size-bias correction, a Dirichlet posterior bound on a match
 probability and the ENFSI verbal scale for a likelihood ratio.
-It works on profiles and reference allele frequencies, not on sequences.
-Requires Jennifer 0.25.0 or newer; no deck dependencies, and it runs on
+It works on profiles and reference allele frequencies; the only sequence
+input is an mtDNA region aligned to the rCRS to name its differences.
+Requires Jennifer 0.26.0 or newer; no deck dependencies, and it runs on
 `jennifer-tiny`.
 
 ## Install
 
-Copy the deck's `src/*.j`, without the `*_test.j` overlays, into
+`jvc add @deckyard/forensicgenetics` and `jvc install`, or copy the deck's
+`src/*.j`, without the `*_test.j` overlays, into
 `vendor/deckyard/forensicgenetics/`. A release archive is
 `deckyard-forensicgenetics-<version>.tar.gz`, with the sources under
 `deckyard-forensicgenetics-<version>/src/`. Details:
