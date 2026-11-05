@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * X-chromosomal STRs: hemizygous male and diploid female profiles, match
@@ -29,12 +29,13 @@
  * @see https://doi.org/10.3389/fgene.2020.00926 - Gomes et al. (2020), Table 5,
  *   X-chromosomal coancestry by sex for common relationships
  * @example
+ * import "@deckyard/forensicgenetics/" as forensicgenetics;
  * import "@deckyard/forensicgenetics/xstr.j" as xstr;
  *
  * def model as xstr.XFrequencies init xstr.independentModel($db);
  * def af as xstr.XProfile init xstr.maleProfile("AF", {"DXS7132": "13"});
  * def girl as xstr.XProfile init xstr.femaleProfile("C", [
- *     forensics.genotype("DXS7132", "13", "14")
+ *     forensicgenetics.genotype("DXS7132", "13", "14")
  * ]);
  * def lr as float init xstr.kinshipLR($af, $girl, xstr.FATHER_DAUGHTER, $model);
  */
@@ -102,7 +103,7 @@ export def struct XRelationship {
  * A haplotype is the alleles at `loci`, in that order, joined by
  * `HAPLOTYPE_SEPARATOR` (`haplotypeKey`). A haplotype not listed, or listed
  * below `minFrequency`, is scored at `minFrequency`; with `minFrequency` 0 an
- * unlisted haplotype throws.
+ * unlisted or zero-frequency haplotype throws.
  * @field name {string} the group's label, e.g. "LG1"
  * @field loci {list of string} the linked loci, in key order
  * @field minFrequency {float} the floor for rare and unseen haplotypes, in [0, 1)
@@ -125,6 +126,15 @@ export def struct XFrequencies {
     db as forensics.FrequencyDb,
     groups as list of LinkageGroup
 };
+
+/**
+ * The most heterozygous loci a female may have within one linkage group. Her
+ * phase is summed over `2^(h-1)` haplotype pairs for `h` heterozygous loci,
+ * so cost doubles per locus; at the cap one group takes about 0.15 s in a
+ * pairwise LR and 0.2 s in a trio index. The Argus X-12 groups have three
+ * loci. Exceeding it throws kind "xstr".
+ */
+export def const MAX_GROUP_HETEROZYGOUS_LOCI as int init 12;
 
 # Phase is one resolution of a person at a unit: two haplotype keys for a
 # female, the same key twice for a male.
@@ -344,6 +354,27 @@ func fail(msg as string) {
     throw Error{kind: "xstr", message: $msg, file: "", line: 0, col: 0};
 }
 
+# FLOAT_MAX is the largest finite float; the across-unit products check
+# against it before multiplying (the interpreter errors on overflow).
+def const FLOAT_MAX as float init 1.7976931348623157e308;
+
+# timesLR multiplies one unit's factor into a running product, throwing
+# where it would leave the float range (kinship.j's guard). `acc <= 1` cannot
+# overflow; for `acc > 1`, `FLOAT_MAX / acc` is finite.
+func timesLR(
+    acc as float,
+    factor as float,
+    what as string,
+    idA as string,
+    idB as string,
+    hint as string) {
+    if ($acc > 1.0 and $factor > FLOAT_MAX / $acc) {
+        fail("the " + $what + " of '" + $idA + "' and '" + $idB +
+            "' exceeds the float range (above 1.8e308)" + $hint);
+    }
+    return $acc * $factor;
+}
+
 func checkSex(sex as string, who as string) {
     if ($sex != MALE and $sex != FEMALE) {
         fail($who + ": sex must be \"male\" or \"female\", not '" + $sex + "'");
@@ -369,20 +400,35 @@ export func xRelationship(
     k0 as float,
     k1 as float,
     k2 as float) {
-    checkSex($sexA, "relationship '" + $name + "'");
-    checkSex($sexB, "relationship '" + $name + "'");
-    for (def k in [$k0, $k1, $k2]) {
+    def r as XRelationship init XRelationship{
+        name: $name,
+        sexA: $sexA,
+        sexB: $sexB,
+        k0: $k0,
+        k1: $k1,
+        k2: $k2
+    };
+    checkRelationship($r);
+    return $r;
+}
+
+# checkRelationship is xRelationship's validation, also applied to a struct
+# literal passed to the kinship functions.
+func checkRelationship(r as XRelationship) {
+    def what as string init "relationship '" + $r.name + "'";
+    checkSex($r.sexA, $what);
+    checkSex($r.sexB, $what);
+    for (def k in [$r.k0, $r.k1, $r.k2]) {
         if ($k < 0.0 or $k > 1.0) {
-            fail("relationship '" + $name + "': IBD coefficients must be in [0, 1]");
+            fail($what + ": IBD coefficients must be in [0, 1]");
         }
     }
-    if (math.abs($k0 + $k1 + $k2 - 1.0) > 0.000000001) {
-        fail("relationship '" + $name + "': IBD coefficients must sum to 1");
+    if (math.abs($r.k0 + $r.k1 + $r.k2 - 1.0) > 0.000000001) {
+        fail($what + ": IBD coefficients must sum to 1");
     }
-    if ($k2 > 0.0 and ($sexA == MALE or $sexB == MALE)) {
-        fail("relationship '" + $name + "': a male has one X allele, so k2 must be 0");
+    if ($r.k2 > 0.0 and ($r.sexA == MALE or $r.sexB == MALE)) {
+        fail($what + ": a male has one X allele, so k2 must be 0");
     }
-    return XRelationship{name: $name, sexA: $sexA, sexB: $sexB, k0: $k0, k1: $k1, k2: $k2};
 }
 
 /**
@@ -504,8 +550,9 @@ export func haplotypeKey(alleles as list of string) {
  * @param haplotypes {map of string to float} `haplotypeKey` -> frequency
  * @return {LinkageGroup} the group
  * @throws {Error} kind "xstr" on no loci, a repeated or empty locus, a floor
- *   outside [0, 1), a key with the wrong number of alleles, a frequency outside
- *   [0, 1], or frequencies summing past `MAX_FREQUENCY_SUM`
+ *   outside [0, 1), a key with the wrong number of alleles or an empty allele,
+ *   a frequency outside [0, 1], or frequencies summing past
+ *   `MAX_FREQUENCY_SUM`
  */
 export func linkageGroup(
     name as string,
@@ -562,7 +609,8 @@ export func linkageGroup(
  * @param group {LinkageGroup} the group
  * @param alleles {list of string} the alleles, in the group's locus order
  * @return {float} the frequency, in (0, 1]
- * @throws {Error} kind "xstr" on the wrong number of alleles, or an unlisted
+ * @throws {Error} kind "xstr" on the wrong number of alleles, an allele that
+ *   is empty or contains the separator, or an unlisted or zero-frequency
  *   haplotype in a group with `minFrequency` 0
  */
 export func haplotypeFrequency(group as LinkageGroup, alleles as list of string) {
@@ -755,12 +803,25 @@ func phases(p as XProfile, u as Unit) {
         def g as forensics.Genotype init $p.loci[$u.name];
         return [Phase{a: $g.a, b: $g.b}];
     }
+    def hets as int init 0;
+    for (def locus in $u.loci) {
+        if ($p.loci[$locus].a != $p.loci[$locus].b) {
+            $hets = $hets + 1;
+        }
+    }
+    if ($hets > MAX_GROUP_HETEROZYGOUS_LOCI) {
+        fail("profile '" + $p.id + "' is heterozygous at {$hets} loci of linkage group '" +
+            $u.name + "'; MAX_GROUP_HETEROZYGOUS_LOCI is {MAX_GROUP_HETEROZYGOUS_LOCI} (the" +
+            " phase sum has 2^(h-1) terms)");
+    }
     def firsts as list of list of string init [[]];
     def seconds as list of list of string init [[]];
-    def hets as int init 0;
+    $hets = 0;
     for (def locus in $u.loci) {
         def a as string init $p.loci[$locus].a;
         def b as string init $p.loci[$locus].b;
+        # Validated once here, so the keys below are joined without haplotypeKey.
+        haplotypeKey([$a, $b]);
         def n as int init len($firsts);
         if ($a != $b and $hets > 0) {
             for (def i in 0..$n) {
@@ -780,7 +841,10 @@ func phases(p as XProfile, u as Unit) {
     }
     def out as list of Phase init [];
     for (def i in 0..len($firsts)) {
-        $out[] = Phase{a: haplotypeKey($firsts[$i]), b: haplotypeKey($seconds[$i])};
+        $out[] = Phase{
+            a: strings.join($firsts[$i], HAPLOTYPE_SEPARATOR),
+            b: strings.join($seconds[$i], HAPLOTYPE_SEPARATOR)
+        };
     }
     return $out;
 }
@@ -799,77 +863,110 @@ func phaseProbability(xf as XFrequencies, u as Unit, sex as string, r as Phase) 
     return 2.0 * $pa * frequency($xf, $u, $r.b);
 }
 
-# fixedOne is Q(G, x): P(female resolution `r` | one of its haplotypes is fixed
-# at `x`, the other drawn from the population).
-func fixedOne(xf as XFrequencies, u as Unit, r as Phase, x as string) {
-    if ($r.a == $r.b) {
-        if ($r.a != $x) {
-            return 0.0;
+# PhaseIndex summarises a female's resolutions at a unit for the pair sums:
+# `total` is Σ P(resolution); `other[x]` is the haplotype paired with `x` in
+# the one resolution that carries `x` (a genotype fixes the complement of each
+# of its haplotypes, so there is at most one), `otherFreq[x]` its frequency.
+def struct PhaseIndex {
+    total as float,
+    other as map of string to string,
+    otherFreq as map of string to float
+};
+
+# Joint is the joint probability of two observations at a unit split by IBD
+# state: k0 c0 + k1 c1 + k2 c2 for any relationship of the pair's sexes.
+def struct Joint {
+    c0 as float,
+    c1 as float,
+    c2 as float
+};
+
+# phaseIndex builds the PhaseIndex of a female's resolutions in one pass.
+func phaseIndex(xf as XFrequencies, u as Unit, rs as list of Phase) {
+    def out as PhaseIndex init PhaseIndex{total: 0.0, other: {}, otherFreq: {}};
+    for (def i in 0..len($rs)) {
+        def a as string init $rs[$i].a;
+        def b as string init $rs[$i].b;
+        def fa as float init frequency($xf, $u, $a);
+        def fb as float init $fa;
+        if ($a != $b) {
+            $fb = frequency($xf, $u, $b);
+            $out.total = $out.total + 2.0 * $fa * $fb;
+        } else {
+            $out.total = $out.total + $fa * $fa;
         }
-        return frequency($xf, $u, $r.a);
+        $out.other[$a] = $b;
+        $out.otherFreq[$a] = $fb;
+        $out.other[$b] = $a;
+        $out.otherFreq[$b] = $fa;
     }
-    if ($r.a == $x) {
-        return frequency($xf, $u, $r.b);
-    }
-    if ($r.b == $x) {
-        return frequency($xf, $u, $r.a);
+    return $out;
+}
+
+# heldWith is Σ over a female's resolutions of Q(G, x): P(her observation |
+# one of her haplotypes is fixed at `x`, the other drawn from the population).
+func heldWith(ix as PhaseIndex, x as string) {
+    if (maps.has($ix.otherFreq, $x)) {
+        return $ix.otherFreq[$x];
     }
     return 0.0;
 }
 
-# samePhase compares two female resolutions as unordered pairs.
-func samePhase(x as Phase, y as Phase) {
-    return ($x.a == $y.a and $x.b == $y.b) or ($x.a == $y.b and $x.b == $y.a);
-}
-
-# pairTerm is the joint probability of one resolution of A and one of B:
+# jointParts sums the pair terms over both persons' resolutions,
 #   male-male      k0 pa pb + k1 [a == b] pa
 #   male-female    k0 px P(Gb) + k1 px Q(Gb, x)
 #   female-female  k0 P(Ga) P(Gb) + k1 P(Ga) (Q(Gb, a1) + Q(Gb, a2)) / 2
 #                  + k2 [Ga == Gb] P(Ga)
-func pairTerm(xf as XFrequencies, u as Unit, rel as XRelationship, ra as Phase, rb as Phase) {
-    if ($rel.sexA == MALE and $rel.sexB == MALE) {
-        def pa as float init frequency($xf, $u, $ra.a);
+# factorised: the k0 part is P(A) P(B), and the k1 / k2 parts look each of A's
+# resolutions up in B's PhaseIndex, so the cost is O(|A| + |B|) resolutions,
+# not their product.
+func jointParts(xf as XFrequencies, u as Unit, a as XProfile, b as XProfile) {
+    def ra as list of Phase init phases($a, $u);
+    def rb as list of Phase init phases($b, $u);
+    if ($a.sex == MALE and $b.sex == MALE) {
+        def pa as float init frequency($xf, $u, $ra[0].a);
         def same as float init 0.0;
-        if ($ra.a == $rb.a) {
+        if ($ra[0].a == $rb[0].a) {
             $same = $pa;
         }
-        return $rel.k0 * $pa * frequency($xf, $u, $rb.a) + $rel.k1 * $same;
+        return Joint{c0: $pa * frequency($xf, $u, $rb[0].a), c1: $same, c2: 0.0};
     }
-    if ($rel.sexA == MALE) {
-        def px as float init frequency($xf, $u, $ra.a);
-        return $px *
-            ($rel.k0 * phaseProbability($xf, $u, FEMALE, $rb) +
-            $rel.k1 * fixedOne($xf, $u, $rb, $ra.a));
+    if ($a.sex == MALE) {
+        def ib as PhaseIndex init phaseIndex($xf, $u, $rb);
+        def px as float init frequency($xf, $u, $ra[0].a);
+        return Joint{c0: $px * $ib.total, c1: $px * heldWith($ib, $ra[0].a), c2: 0.0};
     }
-    if ($rel.sexB == MALE) {
-        def py as float init frequency($xf, $u, $rb.a);
-        return $py *
-            ($rel.k0 * phaseProbability($xf, $u, FEMALE, $ra) +
-            $rel.k1 * fixedOne($xf, $u, $ra, $rb.a));
+    if ($b.sex == MALE) {
+        def ia as PhaseIndex init phaseIndex($xf, $u, $ra);
+        def py as float init frequency($xf, $u, $rb[0].a);
+        return Joint{c0: $py * $ia.total, c1: $py * heldWith($ia, $rb[0].a), c2: 0.0};
     }
-    def pga as float init phaseProbability($xf, $u, FEMALE, $ra);
-    def both as float init 0.0;
-    if (samePhase($ra, $rb)) {
-        $both = $pga;
-    }
-    return $rel.k0 * $pga * phaseProbability($xf, $u, FEMALE, $rb) +
-        $rel.k1 *
-        $pga * (0.5 * fixedOne($xf, $u, $rb, $ra.a) + 0.5 * fixedOne($xf, $u, $rb, $ra.b)) +
-        $rel.k2 * $both;
-}
-
-# unitJoint sums pairTerm over both persons' resolutions at a unit.
-func unitJoint(xf as XFrequencies, u as Unit, a as XProfile, b as XProfile, rel as XRelationship) {
-    def pa as list of Phase init phases($a, $u);
-    def pb as list of Phase init phases($b, $u);
-    def out as float init 0.0;
-    for (def i in 0..len($pa)) {
-        for (def j in 0..len($pb)) {
-            $out = $out + pairTerm($xf, $u, $rel, $pa[$i], $pb[$j]);
+    def ib as PhaseIndex init phaseIndex($xf, $u, $rb);
+    def out as Joint init Joint{c0: 0.0, c1: 0.0, c2: 0.0};
+    def total as float init 0.0;
+    for (def i in 0..len($ra)) {
+        def a1 as string init $ra[$i].a;
+        def a2 as string init $ra[$i].b;
+        def pga as float init phaseProbability($xf, $u, FEMALE, $ra[$i]);
+        $total = $total + $pga;
+        $out.c1 = $out.c1 + $pga * (0.5 * heldWith($ib, $a1) + 0.5 * heldWith($ib, $a2));
+        if (maps.has($ib.other, $a1) and $ib.other[$a1] == $a2) {
+            $out.c2 = $out.c2 + $pga;
         }
     }
+    $out.c0 = $total * $ib.total;
     return $out;
+}
+
+# jointUnder is the joint probability of the two observations under `rel`.
+func jointUnder(j as Joint, rel as XRelationship) {
+    return $rel.k0 * $j.c0 + $rel.k1 * $j.c1 + $rel.k2 * $j.c2;
+}
+
+# unitJoint is the joint probability of A's and B's observations at a unit
+# under `rel`, summed over both persons' resolutions.
+func unitJoint(xf as XFrequencies, u as Unit, a as XProfile, b as XProfile, rel as XRelationship) {
+    return jointUnder(jointParts($xf, $u, $a, $b), $rel);
 }
 
 # unitProbability is P(person's observation at a unit), summed over phase.
@@ -896,12 +993,15 @@ func profileUnits(xf as XFrequencies, p as XProfile) {
  * The probability that an unrelated person of the same sex has the profile,
  * theta 0: a male's allele or haplotype frequency, a female's Hardy-Weinberg
  * genotype frequency (summed over phase within a linkage group), multiplied
- * across loci and groups.
+ * across loci and groups. On a long panel the product can underflow to 0;
+ * use `log10MatchProbability`.
  * @param xf {XFrequencies} the frequency model
  * @param p {XProfile} the profile
  * @return {float} the match probability
  * @throws {Error} kind "xstr" on an empty or malformed profile, a partly typed
- *   linkage group, or a locus neither the database nor a group covers
+ *   linkage group, a female heterozygous at more than
+ *   `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a group, or a locus neither the
+ *   database nor a group covers
  */
 export func matchProbability(xf as XFrequencies, p as XProfile) {
     def out as float init 1.0;
@@ -940,6 +1040,7 @@ func pairSetup(
     checkProfile($a);
     checkProfile($b);
     for (def r in [$rel, $alt]) {
+        checkRelationship($r);
         if ($r.sexA != $a.sex or $r.sexB != $b.sex) {
             fail("relationship '" + $r.name + "' is for a " + $r.sexA + " and a " + $r.sexB +
                 ", but profiles '" + $a.id + "' and '" + $b.id + "' are " + $a.sex + " and " +
@@ -957,12 +1058,13 @@ func unitLR(
     b as XProfile,
     rel as XRelationship,
     alt as XRelationship) {
-    def under as float init unitJoint($xf, $u, $a, $b, $alt);
+    def j as Joint init jointParts($xf, $u, $a, $b);
+    def under as float init jointUnder($j, $alt);
     if ($under <= 0.0) {
         fail("'" + $u.name + "': the alternative '" + $alt.name +
             "' gives these observations probability zero, so no ratio is defined");
     }
-    return unitJoint($xf, $u, $a, $b, $rel) / $under;
+    return jointUnder($j, $rel) / $under;
 }
 
 /**
@@ -995,9 +1097,12 @@ export func pairUnits(xf as XFrequencies, a as XProfile, b as XProfile) {
  * @param rel {XRelationship} the relationship to test
  * @param xf {XFrequencies} the frequency model
  * @return {float} the likelihood ratio
- * @throws {Error} kind "xstr" if the sexes do not match the relationship, the
- *   profiles share no locus, share a locus nothing covers, or one is typed at
- *   part of a linkage group
+ * @throws {Error} kind "xstr" if the relationship fails `xRelationship`'s
+ *   checks or its sexes do not match the profiles, the profiles share no
+ *   locus, share a locus nothing covers, one is typed at part of a linkage
+ *   group, a female is heterozygous at more than
+ *   `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a group, or the LR exceeds the
+ *   float range (use `log10KinshipLRAgainst`)
  */
 export func kinshipLR(a as XProfile, b as XProfile, rel as XRelationship, xf as XFrequencies) {
     return kinshipLRAgainst($a, $b, $rel, unrelated($rel.sexA, $rel.sexB), $xf);
@@ -1023,7 +1128,13 @@ export func kinshipLRAgainst(
     xf as XFrequencies) {
     def out as float init 1.0;
     for (def u in pairSetup($xf, $a, $b, $rel, $alt)) {
-        $out = $out * unitLR($xf, $u, $a, $b, $rel, $alt);
+        $out = timesLR(
+            $out,
+            unitLR($xf, $u, $a, $b, $rel, $alt),
+            "X-STR kinship LR",
+            $a.id,
+            $b.id,
+            "; use log10KinshipLRAgainst");
     }
     return $out;
 }
@@ -1058,42 +1169,99 @@ export func log10KinshipLRAgainst(
 
 # --- paternity of a daughter ------------------------------------------------
 
-# fatherTransmits is the probability that a man whose haplotype at the unit is
-# `f` passes on `x`: per-locus stepwise mutation, independent across a
-# group's loci. A father passes his single X whole.
-func fatherTransmits(model as kinship.MutationModel, u as Unit, f as string, x as string) {
-    if ($u.group < 0) {
-        return kinship.mutationProbability($model, $u.name, $f, $x);
+# fatherTransmits maps each haplotype in the daughter's resolutions to the
+# probability that a man with haplotype `f` passes it on: per-locus stepwise
+# mutation, independent across a group's loci, each locus's probabilities
+# computed once. A father passes his single X whole.
+func fatherTransmits(
+    model as kinship.MutationModel,
+    u as Unit,
+    f as string,
+    daughter as XProfile,
+    dphases as list of Phase) {
+    def fs as list of string init [$f];
+    if ($u.group >= 0) {
+        $fs = strings.split($f, HAPLOTYPE_SEPARATOR);
     }
-    def fs as list of string init strings.split($f, HAPLOTYPE_SEPARATOR);
-    def xs as list of string init strings.split($x, HAPLOTYPE_SEPARATOR);
-    def out as float init 1.0;
+    def table as list of map of string to float init [];
     for (def i in 0..len($u.loci)) {
-        $out = $out * kinship.mutationProbability($model, $u.loci[$i], $fs[$i], $xs[$i]);
+        def locus as string init $u.loci[$i];
+        def g as forensics.Genotype init $daughter.loci[$locus];
+        def row as map of string to float init {};
+        for (def x in [$g.a, $g.b]) {
+            $row[$x] = mutationStep($model, $locus, $fs[$i], $x);
+        }
+        $table[] = $row;
+    }
+    def out as map of string to float init {};
+    for (def r in 0..len($dphases)) {
+        for (def x in [$dphases[$r].a, $dphases[$r].b]) {
+            if (maps.has($out, $x)) {
+                continue;
+            }
+            def xs as list of string init [$x];
+            if ($u.group >= 0) {
+                $xs = strings.split($x, HAPLOTYPE_SEPARATOR);
+            }
+            def p as float init 1.0;
+            for (def i in 0..len($xs)) {
+                $p = $p * $table[$i][$xs[$i]];
+            }
+            $out[$x] = $p;
+        }
     }
     return $out;
 }
 
-# motherTransmits is the probability that the mother passes on `x`, averaged
-# over her phase resolutions weighted by their population probability.
-func motherTransmits(
-    xf as XFrequencies,
-    u as Unit,
-    mphases as list of Phase,
-    weights as list of float,
-    x as string) {
-    def out as float init 0.0;
+# mutationStep is kinship.mutationProbability with its "kinship" errors (a
+# non-numeric allele under a non-zero rate) rethrown as this module's.
+func mutationStep(
+    model as kinship.MutationModel,
+    locus as string,
+    source as string,
+    target as string) {
+    try {
+        return kinship.mutationProbability($model, $locus, $source, $target);
+    } catch (e) {
+        if ($e.kind != "kinship") {
+            throw $e;
+        }
+        fail($e.message);
+    }
+    return 0.0;
+}
+
+# motherTransmits maps each haplotype the mother can pass on to the
+# probability that she does: Σ over her resolutions of P(resolution | her
+# observation) times the haplotype's share of the resolution (1/2 per copy).
+func motherTransmits(xf as XFrequencies, u as Unit, mphases as list of Phase) {
+    def weights as list of float init [];
+    def total as float init 0.0;
     for (def i in 0..len($mphases)) {
-        def n as float init 0.0;
-        if ($mphases[$i].a == $x) {
-            $n = $n + 1.0;
+        def w as float init phaseProbability($xf, $u, FEMALE, $mphases[$i]);
+        $weights[] = $w;
+        $total = $total + $w;
+    }
+    def out as map of string to float init {};
+    for (def i in 0..len($mphases)) {
+        def half as float init $weights[$i] / $total / 2.0;
+        for (def x in [$mphases[$i].a, $mphases[$i].b]) {
+            if (maps.has($out, $x)) {
+                $out[$x] = $out[$x] + $half;
+            } else {
+                $out[$x] = $half;
+            }
         }
-        if ($mphases[$i].b == $x) {
-            $n = $n + 1.0;
-        }
-        $out = $out + $weights[$i] * $n / 2.0;
     }
     return $out;
+}
+
+# transmitted reads a haplotype's probability from motherTransmits' map.
+func transmitted(tm as map of string to float, x as string) {
+    if (maps.has($tm, $x)) {
+        return $tm[$x];
+    }
+    return 0.0;
 }
 
 # trioUnit is the trio index at one unit: X / Y over the daughter's
@@ -1107,27 +1275,23 @@ func trioUnit(
     daughter as XProfile,
     father as XProfile,
     model as kinship.MutationModel) {
-    def mph as list of Phase init phases($mother, $u);
-    def weights as list of float init [];
-    def total as float init 0.0;
-    for (def r in $mph) {
-        def w as float init phaseProbability($xf, $u, FEMALE, $r);
-        $weights[] = $w;
-        $total = $total + $w;
-    }
-    for (def i in 0..len($weights)) {
-        $weights[$i] = $weights[$i] / $total;
-    }
-    def f as string init phases($father, $u)[0].a;
+    def tm as map of string to float init motherTransmits($xf, $u, phases($mother, $u));
+    def dph as list of Phase init phases($daughter, $u);
+    def ft as map of string to float init fatherTransmits(
+        $model,
+        $u,
+        phases($father, $u)[0].a,
+        $daughter,
+        $dph);
     def x as float init 0.0;
     def y as float init 0.0;
-    for (def r in phases($daughter, $u)) {
-        def t1 as float init motherTransmits($xf, $u, $mph, $weights, $r.a);
-        def t2 as float init motherTransmits($xf, $u, $mph, $weights, $r.b);
-        $x = $x + $t1 * fatherTransmits($model, $u, $f, $r.b);
+    for (def r in $dph) {
+        def t1 as float init transmitted($tm, $r.a);
+        def t2 as float init transmitted($tm, $r.b);
+        $x = $x + $t1 * $ft[$r.b];
         $y = $y + $t1 * frequency($xf, $u, $r.b);
         if ($r.a != $r.b) {
-            $x = $x + $t2 * fatherTransmits($model, $u, $f, $r.a);
+            $x = $x + $t2 * $ft[$r.a];
             $y = $y + $t2 * frequency($xf, $u, $r.a);
         }
     }
@@ -1147,13 +1311,19 @@ func duoUnit(
     daughter as XProfile,
     father as XProfile,
     model as kinship.MutationModel) {
-    def f as string init phases($father, $u)[0].a;
+    def dph as list of Phase init phases($daughter, $u);
+    def ft as map of string to float init fatherTransmits(
+        $model,
+        $u,
+        phases($father, $u)[0].a,
+        $daughter,
+        $dph);
     def x as float init 0.0;
     def y as float init 0.0;
-    for (def r in phases($daughter, $u)) {
-        $x = $x + fatherTransmits($model, $u, $f, $r.a) * frequency($xf, $u, $r.b);
+    for (def r in $dph) {
+        $x = $x + $ft[$r.a] * frequency($xf, $u, $r.b);
         if ($r.a != $r.b) {
-            $x = $x + fatherTransmits($model, $u, $f, $r.b) * frequency($xf, $u, $r.a);
+            $x = $x + $ft[$r.b] * frequency($xf, $u, $r.a);
         }
         $y = $y + phaseProbability($xf, $u, FEMALE, $r);
     }
@@ -1181,7 +1351,10 @@ func requireSex(p as XProfile, sex as string, role as string) {
  * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the combined paternity index
  * @throws {Error} kind "xstr" on a wrong sex, no shared locus, a locus nothing
- *   covers, a partly typed group, or a maternal exclusion
+ *   covers, a partly typed group, a female heterozygous at more than
+ *   `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a group, a maternal exclusion, a
+ *   non-numeric allele where `model` needs a step count, or an index past the
+ *   float range
  */
 export func daughterTrioIndex(
     mother as XProfile,
@@ -1198,7 +1371,13 @@ export func daughterTrioIndex(
         "profiles '" + $mother.id + "', '" + $daughter.id + "' and '" + $allegedFather.id + "'");
     def out as float init 1.0;
     for (def u in $units) {
-        $out = $out * trioUnit($xf, $u, $mother, $daughter, $allegedFather, $model);
+        $out = timesLR(
+            $out,
+            trioUnit($xf, $u, $mother, $daughter, $allegedFather, $model),
+            "daughter paternity index",
+            $daughter.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -1213,7 +1392,9 @@ export func daughterTrioIndex(
  * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the combined paternity index
  * @throws {Error} kind "xstr" on a wrong sex, no shared locus, a locus nothing
- *   covers, or a partly typed group
+ *   covers, a partly typed group, a daughter heterozygous at more than
+ *   `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a group, a non-numeric allele where
+ *   `model` needs a step count, or an index past the float range
  */
 export func daughterDuoIndex(
     daughter as XProfile,
@@ -1228,7 +1409,13 @@ export func daughterDuoIndex(
         "profiles '" + $daughter.id + "' and '" + $allegedFather.id + "'");
     def out as float init 1.0;
     for (def u in $units) {
-        $out = $out * duoUnit($xf, $u, $daughter, $allegedFather, $model);
+        $out = timesLR(
+            $out,
+            duoUnit($xf, $u, $daughter, $allegedFather, $model),
+            "daughter paternity index",
+            $daughter.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }

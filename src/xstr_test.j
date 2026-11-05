@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for xstr.j. Run with `jennifer test xstr_test.j`.
 #
@@ -11,6 +11,8 @@
 # from Gomes et al. (2020), Front. Genet. 11:926, Table 5.
 use testing;
 use math;
+use convert;
+use strings;
 
 def const TOL as float init 0.000000001;
 
@@ -662,4 +664,213 @@ func testPaternityErrors() {
     testing.assertThrows("maternalExclusion", "xstr");
     testing.assertThrows("trioWrongSex", "xstr");
     testing.assertThrows("duoWrongSex", "xstr");
+}
+
+# --- wide linkage groups ----------------------------------------------------
+
+# wideModel is a group of h loci "X0".."X{h-1}" with no listed haplotype, so
+# every haplotype is at the floor f.
+func wideModel(h as int, f as float) {
+    def loci as list of string init [];
+    for (def i in 0..$h) {
+        $loci[] = "X" + convert.toString($i);
+    }
+    return withLinkageGroup(independentModel(forensics.db("e")), linkageGroup("W", $loci, $f, {}));
+}
+
+# wideFemale is a female with alleles x/y at the first `hets` loci of a wide
+# group and x/x at the rest.
+func wideFemale(id as string, h as int, hets as int, x as string, y as string) {
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..$h) {
+        def other as string init $y;
+        if ($i >= $hets) {
+            $other = $x;
+        }
+        $gs[] = forensics.genotype("X" + convert.toString($i), $x, $other);
+    }
+    return femaleProfile($id, $gs);
+}
+
+func wideMale(id as string, h as int, x as string) {
+    def alleles as map of string to string init {};
+    for (def i in 0..$h) {
+        $alleles["X" + convert.toString($i)] = $x;
+    }
+    return maleProfile($id, $alleles);
+}
+
+func testWideGroupFullSistersClosedForm() {
+    # Every haplotype at the floor f. A = 10/11 and B = 10/12 at each of h loci:
+    # 2^(h-1) phases each, P = 2 f^2 apiece, so P(A) = P(B) = 2^h f^2 and the
+    # k0 part is 4^h f^4. Only A's phase {all-10, all-11} shares a haplotype
+    # with B (B's {all-10, all-12}): k1 part = 2 f^2 * 1/2 * f = f^3; k2 part 0.
+    # LR = (1/2 f^3) / (4^h f^4) = 1 / (2 * 4^h * f).
+    def f as float init 0.0001;
+    for (def h in [6, 10, MAX_GROUP_HETEROZYGOUS_LOCI]) {
+        def lr as float init kinshipLR(
+            wideFemale("A", $h, $h, "10", "11"),
+            wideFemale("B", $h, $h, "10", "12"),
+            FULL_SISTERS,
+            wideModel($h, $f));
+        near($lr, 1.0 / (2.0 * math.pow(4.0, convert.toFloat($h)) * $f));
+    }
+}
+
+func testWideGroupTrioClosedForm() {
+    # Mother 10/11, daughter 10/12 at every locus, father all-12, floor f.
+    # The mother's 2^(h-1) phases are equally likely, so T_M(all-10) =
+    # 2^-(h-1) / 2; only the daughter's phase {all-10, all-12} has T_M > 0.
+    # X = T_M(all-10) * 1, Y = T_M(all-10) * f: PI = 1 / f.
+    def h as int init MAX_GROUP_HETEROZYGOUS_LOCI;
+    def pi as float init daughterTrioIndex(
+        wideFemale("M", $h, $h, "10", "11"),
+        wideFemale("D", $h, $h, "10", "12"),
+        wideMale("AF", $h, "12"),
+        wideModel($h, 0.0001),
+        kinship.NO_MUTATION);
+    near($pi, 10000.0);
+}
+
+func tooHeterozygousMatch() {
+    def h as int init MAX_GROUP_HETEROZYGOUS_LOCI + 1;
+    matchProbability(wideModel($h, 0.0001), wideFemale("A", $h, $h, "10", "11"));
+}
+
+func tooHeterozygousPair() {
+    def h as int init MAX_GROUP_HETEROZYGOUS_LOCI + 1;
+    kinshipLR(
+        wideFemale("A", $h, $h, "10", "11"),
+        wideFemale("B", $h, $h, "10", "12"),
+        FULL_SISTERS,
+        wideModel($h, 0.0001));
+}
+
+func testGroupHeterozygosityCap() {
+    testing.assertThrows("tooHeterozygousMatch", "xstr");
+    testing.assertThrows("tooHeterozygousPair", "xstr");
+    # One more locus, but homozygous: 2^(h-1) phases at 2 f^2 each.
+    def h as int init MAX_GROUP_HETEROZYGOUS_LOCI;
+    near(
+        matchProbability(wideModel($h + 1, 0.01), wideFemale("A", $h + 1, $h, "10", "11")),
+        math.pow(2.0, convert.toFloat($h)) * 0.0001);
+}
+
+# --- relationship literals --------------------------------------------------
+
+func literalRelationship() {
+    kinshipLR(
+        male("A", "10"),
+        male("B", "10"),
+        XRelationship{name: "bad", sexA: MALE, sexB: MALE, k0: 0.0, k1: 5.0, k2: 0.0},
+        model());
+}
+
+func literalAlternative() {
+    kinshipLRAgainst(
+        male("A", "10"),
+        male("B", "10"),
+        FULL_BROTHERS,
+        XRelationship{name: "bad", sexA: MALE, sexB: MALE, k0: 0.5, k1: 0.0, k2: 0.0},
+        model());
+}
+
+func testLiteralRelationshipsAreValidated() {
+    testing.assertThrows("literalRelationship", "xstr");
+    testing.assertThrows("literalAlternative", "xstr");
+}
+
+# --- round 2 ----------------------------------------------------------------
+
+# tinyCase: 20 loci, allele "1" at 1e-20 with no floor (N = 0); everyone is 1
+# (1/1 for women). Maternal half-brothers share the mother's X with
+# probability 1/2: LR .5 + .5 / p = 5e19 + .5 per locus. Daughter trio:
+# X = T_M(1) F(1) = 1, Y = T_M(1) p = p, so 1/p; duo X = F(1) p, Y = p², 1/p.
+# 20 loci: 5e19^20 ≈ 1e394 and 1e400, past the float range.
+def struct TinyCase {
+    xf as XFrequencies,
+    man as XProfile,
+    woman as XProfile
+};
+
+func tinyCase() {
+    def db as forensics.FrequencyDb init forensics.db("tiny");
+    def alleles as map of string to string init {};
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..20) {
+        def l as string init "X{$i}";
+        $db = forensics.withLocus($db, $l, 0, {"1": 0.00000000000000000001, "2": 0.5});
+        $alleles[$l] = "1";
+        $gs[] = forensics.genotype($l, "1", "1");
+    }
+    return TinyCase{
+        xf: independentModel($db),
+        man: maleProfile("m", $alleles),
+        woman: femaleProfile("w", $gs)
+    };
+}
+
+func overflowBrothers() {
+    def c as TinyCase init tinyCase();
+    kinshipLR($c.man, $c.man, MATERNAL_HALF_BROTHERS, $c.xf);
+}
+
+func overflowDaughterTrio() {
+    def c as TinyCase init tinyCase();
+    daughterTrioIndex($c.woman, $c.woman, $c.man, $c.xf, kinship.NO_MUTATION);
+}
+
+func overflowDaughterDuo() {
+    def c as TinyCase init tinyCase();
+    daughterDuoIndex($c.woman, $c.man, $c.xf, kinship.NO_MUTATION);
+}
+
+func testProductsOverflowAsXstrErrors() {
+    for (def f in ["overflowBrothers", "overflowDaughterTrio", "overflowDaughterDuo"]) {
+        testing.assertThrows($f, "xstr");
+    }
+    def msg as string init "";
+    try {
+        overflowBrothers();
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertTrue(strings.contains($msg, "log10KinshipLRAgainst"));
+    def c as TinyCase init tinyCase();
+    near(
+        log10KinshipLRAgainst($c.man, $c.man, MATERNAL_HALF_BROTHERS, unrelated(MALE, MALE), $c.xf),
+        20.0 * math.log10(0.5 + 0.5 / 0.00000000000000000001));
+}
+
+func nonNumericFatherTrio() {
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("x"),
+        "D",
+        100,
+        {"10": 0.3, "11": 0.3, "X": 0.2});
+    daughterTrioIndex(
+        femaleProfile("mom", [forensics.genotype("D", "10", "11")]),
+        femaleProfile("dau", [forensics.genotype("D", "10", "11")]),
+        maleProfile("af", {"D": "X"}),
+        independentModel($db),
+        kinship.DEFAULT_MUTATION);
+}
+
+func nonNumericFatherDuo() {
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("x"),
+        "D",
+        100,
+        {"10": 0.3, "11": 0.3, "X": 0.2});
+    daughterDuoIndex(
+        femaleProfile("dau", [forensics.genotype("D", "10", "11")]),
+        maleProfile("af", {"D": "X"}),
+        independentModel($db),
+        kinship.DEFAULT_MUTATION);
+}
+
+# kinship.mutationProbability's "kinship" error used to escape.
+func testNonNumericAlleleUnderMutationThrowsXstr() {
+    testing.assertThrows("nonNumericFatherTrio", "xstr");
+    testing.assertThrows("nonNumericFatherDuo", "xstr");
 }

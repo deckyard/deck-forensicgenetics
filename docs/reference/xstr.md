@@ -21,7 +21,10 @@ Signatures, relationship constants and struct fields are in the
   from a core `FrequencyDb` (floored at `5/(2N)` as in the core).
   `withLinkageGroup` makes a cluster's loci one marker, scored from the
   group's haplotype table: a male's haplotype frequency, a female's genotype
-  summed over the haplotype pairs (phases) her genotypes allow.
+  summed over the haplotype pairs (phases) her genotypes allow: `2^(h-1)`
+  for `h` heterozygous loci, at most `MAX_GROUP_HETEROZYGOUS_LOCI` (12) per
+  group. Pairwise and trio sums are factorised, so their cost is linear in
+  the phase count.
 - A haplotype key is the alleles in the group's locus order joined by `-`
   (`haplotypeKey(["17", "24", "12"])` is `"17-24-12"`). Unlisted haplotypes
   score at the group's `minFrequency`; with 0 they throw.
@@ -30,7 +33,8 @@ Signatures, relationship constants and struct fields are in the
   throws, as does a single locus every person carries that the database
   lacks.
 - `kinshipLR` multiplies over loci and groups; `pairUnits` lists them, a
-  group by its name.
+  group by its name. `matchProbability` can underflow to 0 on a long panel;
+  `log10MatchProbability` does not.
 - `daughterTrioIndex` and `daughterDuoIndex` take a `kinship.MutationModel`
   for the alleged father: within a group, mutation is per locus and
   independent. The mother does not mutate.
@@ -44,16 +48,25 @@ Guide: [X-chromosomal STRs](../casework/x-chromosome.md).
 
 - an unknown sex; a male profile with two alleles at a locus; an empty allele
   or a repeated locus
-- coefficients outside [0, 1], not summing to 1, or `k2 > 0` with a male
-- a relationship whose sexes differ from the profiles'
+- coefficients outside [0, 1], not summing to 1, or `k2 > 0` with a male,
+  also in an `XRelationship` struct literal passed to `kinshipLR` /
+  `kinshipLRAgainst` / `log10KinshipLRAgainst`
+- a relationship whose sexes differ from the profiles'; a mother, daughter or
+  alleged father of the wrong sex in `daughterTrioIndex` / `daughterDuoIndex`
+- a haplotype with no allele, or an allele that is empty or contains `-`
 - a malformed linkage group (no loci, repeated loci, a floor outside [0, 1),
   a key with the wrong number of alleles, a frequency outside [0, 1], a sum
   past `forensicgenetics.MAX_FREQUENCY_SUM`), a group name or locus already in
   the model, an unlisted haplotype with no floor
-- no shared locus, a shared locus nothing covers, a partly typed group
+- a profile with no locus (match probability), no shared locus, a shared
+  locus nothing covers, a partly typed group, a female heterozygous at more than `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a
+  group
 - an alternative hypothesis giving the observations probability zero, the
   `log10` of an exclusion, a maternal exclusion in a trio
+- a non-numeric allele where the daughter indices' mutation model needs a
+  step count
+- an LR or index product past the float range (`kinshipLR` /
+  `kinshipLRAgainst` name `log10KinshipLRAgainst`)
 
 An unlisted allele at a locus with `n == 0` raises the core's
-`"forensicgenetics"` error; a non-numeric allele under a mutation model,
-`kinship`'s `"kinship"` error.
+`"forensicgenetics"` error.

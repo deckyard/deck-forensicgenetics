@@ -24,7 +24,7 @@ mutation.isStationary($m, $la);     # π M = π ?
 
 | Model | Mutation goes to | Notes |
 | --- | --- | --- |
-| `equalModel(rate)` | every other allele equally | simplest; not stationary unless frequencies are equal |
+| `equalModel(rate)` | every other allele equally | not stationary unless frequencies are equal |
 | `proportionalModel(rate)` | allele `j` in proportion to `p_j` | stationary by construction; ignores repeat length |
 | `stepwiseModel(rate, range)` | nearby repeat counts, `range` per extra step | microvariants keep to their own class |
 | `extendedStepwiseModel(rate, range, rate2)` | as Stepwise, plus `rate2` between classes (15 -> 15.2) | Familias 3's model |
@@ -49,7 +49,8 @@ def spec as mutation.MutationSpec init mutation.stationaryModel(mutation.extende
 
 PM does not always exist. A rare allele (a typed allele at the `5/(2N)` floor,
 say) can need a scaled diagonal below zero, and a Stepwise matrix with
-microvariants and `rate2` 0 has no unique stationary distribution; both throw.
+microvariants and `rate2` 0 has no unique stationary distribution; both throw,
+as does a locus with more than `MAX_STATIONARY_ALLELES` (200) alleles.
 In a trio or duo every transmitting parent is typed, so stationarity matters
 only through the changed matrix entries.
 
@@ -113,9 +114,9 @@ frequencies are read as frequencies among detectable alleles and scaled by
 `1 - q`. Every single-peak genotype is summed over `a/a` and `a/silent`
 (Familias' treatment). For opposite homozygotes, child `a` and alleged father
 `b`, the duo index is `q / ((πa + 2q)(πb + 2q))`; in a trio with a
-heterozygous mother `a/c`, `q / ((πb + 2q)(πa + q))`. Both tend to 0 with `q`, and at `q = 0`
-every function equals its `kinship.j` original. The silent allele does not
-mutate.
+heterozygous mother `a/c`, `q / ((πb + 2q)(πa + q))`. Both tend to 0 with
+`q`, and at `q = 0` every function equals its `kinship.j` original. The
+silent allele does not mutate.
 
 ## Worked example
 

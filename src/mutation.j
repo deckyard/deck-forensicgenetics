@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Familias mutation models, silent alleles, and the trio, duo and pairwise
@@ -49,6 +49,7 @@
  */
 use math;
 use maps;
+use linalg;
 use convert;
 use strings;
 
@@ -186,11 +187,27 @@ export def struct MutationCount {
     totalMeioses as int
 };
 
+/**
+ * The most detectable alleles a locus may have under a stationary (PM) model;
+ * `mutationMatrix` throws above it. One PM matrix takes about 0.19 s at 120
+ * alleles and 0.47 s at 200. Real tables (SE33 included) list under 100.
+ */
+export def const MAX_STATIONARY_ALLELES as int init 200;
+
 # ROW_TOLERANCE bounds how far a built row may sum from 1, as rounding.
 def const ROW_TOLERANCE as float init 0.000000001;
 
-# PIVOT_TOLERANCE is the smallest pivot the stationary-vector solve accepts.
-def const PIVOT_TOLERANCE as float init 0.000000000001;
+# MAX_WEIGHT_LOG10 bounds |log10| of a Stepwise weight range^k (and of the
+# row's weight sum), inside the normal float range.
+def const MAX_WEIGHT_LOG10 as float init 300.0;
+
+# MAX_REPEAT_VALUE bounds a Stepwise allele's repeat value: one decimal stays
+# exact and step counts fit an int far below it.
+def const MAX_REPEAT_VALUE as float init 1000000.0;
+
+# FLOAT_MAX is the largest finite float; the across-loci products check
+# against it before multiplying (the interpreter errors on overflow).
+def const FLOAT_MAX as float init 1.7976931348623157e308;
 
 # --- errors -----------------------------------------------------------------
 
@@ -214,6 +231,23 @@ func checkSilent(q as float) {
     if ($q < 0.0 or $q >= 1.0) {
         fail("silent allele frequency must be in [0, 1)");
     }
+}
+
+# timesLR multiplies one locus's factor into a running product, throwing
+# where it would leave the float range (kinship.j's guard). `acc <= 1` cannot
+# overflow; for `acc > 1`, `FLOAT_MAX / acc` is finite.
+func timesLR(
+    acc as float,
+    factor as float,
+    what as string,
+    idA as string,
+    idB as string,
+    hint as string) {
+    if ($acc > 1.0 and $factor > FLOAT_MAX / $acc) {
+        fail("the " + $what + " of '" + $idA + "' and '" + $idB +
+            "' exceeds the float range (above 1.8e308)" + $hint);
+    }
+    return $acc * $factor;
 }
 
 # --- model specifications ---------------------------------------------------
@@ -301,7 +335,8 @@ export func extendedStepwiseModel(rate as float, range as float, rate2 as float)
  * `d_i = R v_i / (c p_i)`, `v` the matrix's stationary distribution, `R` and
  * `c` the expected mutation rates under `p` and `v`. The result keeps `p`
  * (the locus frequencies) stationary and the expected rate `R`. Building the
- * matrix throws when a scaled diagonal would go negative.
+ * matrix throws when a scaled diagonal would go negative or the locus has
+ * more than `MAX_STATIONARY_ALLELES` detectable alleles.
  * @param model {MutationSpec} the model to transform
  * @return {MutationSpec} the stationary copy
  */
@@ -337,7 +372,8 @@ export func withLocusRate(model as MutationSpec, locus as string, rate as float)
  * @param model {MutationSpec} the model to copy
  * @param rates {map of string to float} locus -> mutation rate
  * @return {MutationSpec} the updated copy
- * @throws {Error} kind "mutation" on an out-of-range rate
+ * @throws {Error} kind "mutation" on an out-of-range rate, or a Stepwise rate
+ *   that with `rate2` exceeds 1
  */
 export func withLocusRates(model as MutationSpec, rates as map of string to float) {
     def out as MutationSpec init $model;
@@ -443,35 +479,68 @@ func identityRows(n as int) {
  * @param model {MutationSpec} the mutation model
  * @param alleles {LocusAlleles} the locus's alleles and frequencies
  * @return {MutationMatrix} the matrix
- * @throws {Error} kind "mutation" on an unknown model, Stepwise over an allele
- *   that is not a repeat count with at most one decimal, a Proportional rate
- *   too high for the frequencies (a negative diagonal), a row that does not
- *   sum to 1, or a PM transformation that does not exist
+ * @throws {Error} kind "mutation" on an unknown model or a rate in force at
+ *   the locus outside [0, 1) (a `MutationSpec` literal); for Stepwise, a
+ *   `rate2` outside [0, 1), `rate + rate2` above 1, a `range` not above 0, an
+ *   allele that is not a repeat count with at most one decimal, a `.0` label,
+ *   a repeat value above 1e6, two labels with one repeat value, or a
+ *   `range^k` outside the float range; an entry outside [0, 1] (a
+ *   Proportional rate too high for the frequencies), a row that does not sum
+ *   to 1; for a stationary model, more than `MAX_STATIONARY_ALLELES`
+ *   detectable alleles, or a PM transformation that does not exist or has no
+ *   unique stationary distribution
  */
 export func mutationMatrix(model as MutationSpec, alleles as LocusAlleles) {
     def n as int init len($alleles.alleles);
     def nd as int init detectableCount($alleles.alleles);
     def rate as float init rateAt($model, $alleles.locus);
-    def rows as list of list of float init [];
+    checkSpec($model, $rate, $alleles.locus);
+    def m as MutationMatrix init MutationMatrix{
+        locus: $alleles.locus,
+        alleles: $alleles.alleles,
+        rows: []
+    };
     if ($nd <= 1 or ($rate <= 0.0 and $model.rate2 <= 0.0)) {
-        $rows = identityRows($n);
-    } else {
-        if ($model.model == MODEL_EQUAL) {
-            $rows = equalRows($n, $nd, $rate);
-        } elseif ($model.model == MODEL_PROPORTIONAL) {
-            $rows = proportionalRows($n, $nd, $rate, $alleles.frequencies);
-        } elseif ($model.model == MODEL_STEPWISE) {
-            $rows = stepwiseRows($n, $nd, $rate, $model, $alleles);
-        } else {
-            fail("unknown mutation model '" + $model.model + "'");
-        }
-        checkRows($rows, $alleles.locus);
-        if ($model.stationary) {
-            $rows = stabilisePM($rows, $nd, $alleles);
-            checkRows($rows, $alleles.locus);
-        }
+        $m.rows = identityRows($n);
+        return $m;
     }
-    return MutationMatrix{locus: $alleles.locus, alleles: $alleles.alleles, rows: $rows};
+    if ($model.stationary and $nd > MAX_STATIONARY_ALLELES) {
+        fail("locus '" + $alleles.locus + "': {$nd} detectable alleles under a stationary" +
+            " model; MAX_STATIONARY_ALLELES is {MAX_STATIONARY_ALLELES}");
+    }
+    if ($model.model == MODEL_EQUAL) {
+        $m.rows = equalRows($n, $nd, $rate);
+    } elseif ($model.model == MODEL_PROPORTIONAL) {
+        $m.rows = proportionalRows($n, $nd, $rate, $alleles.frequencies);
+    } else {
+        $m.rows = stepwiseRows($n, $nd, $rate, $model, $alleles);
+    }
+    checkRows($m);
+    if ($model.stationary) {
+        $m.rows = stabilisePM($m, $nd, $alleles);
+        checkRows($m);
+    }
+    return $m;
+}
+
+# checkSpec validates what a `MutationSpec` literal can carry past the
+# constructors: the model name and the parameters in force at the locus.
+func checkSpec(model as MutationSpec, rate as float, locus as string) {
+    if ($model.model != MODEL_EQUAL and $model.model != MODEL_PROPORTIONAL and
+        $model.model != MODEL_STEPWISE) {
+        fail("unknown mutation model '" + $model.model + "'");
+    }
+    checkRate($rate, "locus '" + $locus + "': mutation rate");
+    if ($model.model != MODEL_STEPWISE) {
+        return;
+    }
+    checkRate($model.rate2, "locus '" + $locus + "': microvariant mutation rate");
+    if ($model.range <= 0.0) {
+        fail("locus '" + $locus + "': mutation range must be above 0");
+    }
+    if ($rate + $model.rate2 > 1.0) {
+        fail("locus '" + $locus + "': mutation rate plus microvariant rate must be at most 1");
+    }
 }
 
 func equalRows(n as int, nd as int, rate as float) {
@@ -518,10 +587,24 @@ func proportionalRows(n as int, nd as int, rate as float, freqs as list of float
     return $rows;
 }
 
-# microClass is FamiliasLocus's `microgroup`: ten times the allele's distance
-# from its nearest integer, rounded (15 -> 0, 15.2 -> 2, 15.7 -> -3).
+# microClass is FamiliasLocus's `microgroup`, `round((v - round(v)) * 10)`
+# with R's round (half to even): 15 -> 0, 15.2 -> 2, 15.7 -> -3, and
+# 14.5 / 16.5 -> 5 but 15.5 -> -5.
 func microClass(value as float) {
-    return math.round(($value - convert.toFloat(math.round($value))) * 10.0);
+    return math.round(($value - convert.toFloat(roundHalfEven($value))) * 10.0);
+}
+
+# roundHalfEven is R's round(x): halves go to the even neighbour.
+# math.round takes them away from zero.
+func roundHalfEven(value as float) {
+    def lo as int init math.floor($value);
+    if ($value - convert.toFloat($lo) == 0.5) {
+        if ($lo % 2 == 0) {
+            return $lo;
+        }
+        return $lo + 1;
+    }
+    return math.round($value);
 }
 
 func stepwiseValue(locus as string, allele as string) {
@@ -534,7 +617,60 @@ func stepwiseValue(locus as string, allele as string) {
         fail("locus '" + $locus + "': allele '" + $allele +
             "' - a microvariant takes exactly one decimal");
     }
-    return forensics.alleleValue($allele);
+    if (len($parts) == 2 and $parts[1] == "0") {
+        fail("locus '" + $locus + "': allele '" + $allele + "' - write the integer label '" +
+            $parts[0] + "', not a '.0' decimal");
+    }
+    def v as float init forensics.alleleValue($allele);
+    if (math.abs($v) > MAX_REPEAT_VALUE) {
+        fail("locus '" + $locus + "': allele '" + $allele +
+            "' - the stepwise model takes repeat values up to 1e6");
+    }
+    return $v;
+}
+
+# checkStepwiseAlleles rejects two labels with one repeat value ("10" and
+# "010"): the matrix would treat them as distinct alleles zero steps apart.
+# It also rejects a `range` whose largest within-class weight `range^k` (or
+# the row's weight sum) leaves the finite, normal float range.
+func checkStepwiseAlleles(
+    alleles as LocusAlleles,
+    nd as int,
+    range as float,
+    values as list of float,
+    classes as list of int) {
+    if ($range <= 0.0) {
+        fail("locus '" + $alleles.locus + "': mutation range must be above 0");
+    }
+    def far as int init 0;
+    def farI as int init 0;
+    def farJ as int init 0;
+    for (def i in 0..$nd) {
+        for (def j in $i + 1..$nd) {
+            if ($values[$i] == $values[$j]) {
+                fail("locus '" + $alleles.locus + "': alleles '" + $alleles.alleles[$i] +
+                    "' and '" + $alleles.alleles[$j] + "' have the same repeat value");
+            }
+            if ($classes[$i] != $classes[$j]) {
+                continue;
+            }
+            def steps as int init math.round(math.abs($values[$i] -$values[$j]));
+            if ($steps > $far) {
+                $far = $steps;
+                $farI = $i;
+                $farJ = $j;
+            }
+        }
+    }
+    if ($far == 0) {
+        return;
+    }
+    def lw as float init convert.toFloat($far) * math.log10($range);
+    if ($lw < -MAX_WEIGHT_LOG10 or $lw + math.log10(convert.toFloat($nd)) > MAX_WEIGHT_LOG10) {
+        fail("locus '" + $alleles.locus + "': range^{$far} between alleles '" +
+            $alleles.alleles[$farI] + "' and '" + $alleles.alleles[$farJ] + "' is 10^{$lw}," +
+            " outside the float range - the step weight would be 0 or infinite");
+    }
 }
 
 # stepwiseRows follows FamiliasLocus's 'Stepwise' model: weights
@@ -546,7 +682,7 @@ func stepwiseRows(
     rate as float,
     model as MutationSpec,
     alleles as LocusAlleles) {
-    def rows as list of list of float init identityRows($n);
+    def rows as list of list of float init [];
     def values as list of float init [];
     def classes as list of int init [];
     for (def i in 0..$nd) {
@@ -554,16 +690,25 @@ func stepwiseRows(
         $values[] = $v;
         $classes[] = microClass($v);
     }
+    checkStepwiseAlleles($alleles, $nd, $model.range, $values, $classes);
     for (def i in 0..$nd) {
-        def row as list of float init stepwiseRow($nd, $i, $rate, $model, $values, $classes);
-        for (def j in 0..$nd) {
-            $rows[$i][$j] = $row[$j];
+        $rows[] = stepwiseRow($n, $nd, $i, $rate, $model, $values, $classes);
+    }
+    for (def i in $nd..$n) {
+        def row as list of float init [];
+        for (def j in 0..$n) {
+            $row[] = 0.0;
         }
+        $row[$i] = 1.0;
+        $rows[] = $row;
     }
     return $rows;
 }
 
+# stepwiseRow is row i over all n alleles: the in-class weights computed once
+# into the row, then scaled; 0 in the silent allele's column.
 func stepwiseRow(
+    n as int,
     nd as int,
     i as int,
     rate as float,
@@ -572,23 +717,33 @@ func stepwiseRow(
     classes as list of int) {
     def same as int init 0;
     def weight as float init 0.0;
+    def row as list of float init [];
     for (def j in 0..$nd) {
+        def w as float init 0.0;
         if ($classes[$j] == $classes[$i]) {
             $same = $same + 1;
             if ($j != $i) {
-                $weight = $weight + stepWeight($model.range, $values[$i], $values[$j]);
+                $w = stepWeight($model.range, $values[$i], $values[$j]);
+                $weight = $weight + $w;
             }
         }
+        $row[] = $w;
     }
-    def row as list of float init [];
+    def across as float init 0.0;
+    if ($same < $nd) {
+        $across = $model.rate2 / convert.toFloat($nd - $same);
+    }
     for (def j in 0..$nd) {
         if ($j == $i) {
-            $row[] = stepwiseDiagonal($same, $nd, $rate, $model.rate2);
+            $row[$j] = stepwiseDiagonal($same, $nd, $rate, $model.rate2);
         } elseif ($classes[$j] == $classes[$i]) {
-            $row[] = stepWeight($model.range, $values[$i], $values[$j]) / $weight * $rate;
+            $row[$j] = $row[$j] / $weight * $rate;
         } else {
-            $row[] = $model.rate2 / convert.toFloat($nd - $same);
+            $row[$j] = $across;
         }
+    }
+    for (def j in $nd..$n) {
+        $row[] = 0.0;
     }
     return $row;
 }
@@ -612,124 +767,155 @@ func stepwiseDiagonal(same as int, nd as int, rate as float, rate2 as float) {
 
 # checkRows enforces what FamiliasLocus's validateMutation does: entries in
 # [0, 1], rows summing to 1.
-func checkRows(rows as list of list of float, locus as string) {
-    for (def i in 0..len($rows)) {
+func checkRows(m as MutationMatrix) {
+    for (def i in 0..len($m.rows)) {
         def sum as float init 0.0;
-        for (def x in $rows[$i]) {
+        for (def x in $m.rows[$i]) {
             if ($x < 0.0 or $x > 1.0) {
-                fail("locus '" + $locus +
+                fail("locus '" + $m.locus +
                     "': the mutation matrix has an entry outside [0, 1] - the rate is too high" +
                     " for this model and these frequencies");
             }
             $sum = $sum + $x;
         }
         if (math.abs($sum - 1.0) > ROW_TOLERANCE) {
-            fail("locus '" + $locus + "': a mutation matrix row does not sum to 1");
+            fail("locus '" + $m.locus + "': a mutation matrix row does not sum to 1");
         }
     }
 }
 
 # stabilisePM is pedmut's .stabilizePM (Familias' stabilize, method "PM") on
-# the detectable block, with p the detectable frequencies normalised to 1.
-func stabilisePM(rows as list of list of float, nd as int, alleles as LocusAlleles) {
-    def out as list of list of float init $rows;
+# the detectable block, with p the detectable frequencies normalised to 1. It
+# returns fresh rows; the silent allele's row and column are copied.
+func stabilisePM(m as MutationMatrix, nd as int, alleles as LocusAlleles) {
+    def n as int init len($m.rows);
     def sum as float init 0.0;
     for (def i in 0..$nd) {
         $sum = $sum + $alleles.frequencies[$i];
     }
     def r as float init 0.0;
     for (def i in 0..$nd) {
-        $r = $r + $rows[$i][$i] * $alleles.frequencies[$i] / $sum;
+        $r = $r + $m.rows[$i][$i] * $alleles.frequencies[$i] / $sum;
     }
     $r = 1.0 - $r;
+    def out as list of list of float init [];
     if ($r <= 0.0) {
+        for (def i in 0..$n) {
+            $out[] = $m.rows[$i];
+        }
         return $out;
     }
-    def v as list of float init stationaryVector($rows, $nd, $alleles.locus);
+    def v as list of float init stationaryVector($m, $nd, $alleles);
     def c as float init 0.0;
     for (def i in 0..$nd) {
-        $c = $c + $rows[$i][$i] * $v[$i];
+        $c = $c + $m.rows[$i][$i] * $v[$i];
     }
     $c = 1.0 - $c;
-    for (def i in 0..$nd) {
+    for (def i in 0..$n) {
+        if ($i >= $nd) {
+            $out[] = $m.rows[$i];
+            continue;
+        }
         def p as float init $alleles.frequencies[$i] / $sum;
         def d as float init $r * $v[$i] / ($c * $p);
-        if ($d * (1.0 - $rows[$i][$i]) > 1.0) {
+        if ($d * (1.0 - $m.rows[$i][$i]) > 1.0) {
             fail("locus '" + $alleles.locus +
                 "': the PM stationary transformation does not exist for this model");
         }
-        for (def j in 0..$nd) {
+        def row as list of float init [];
+        for (def j in 0..$n) {
             if ($j == $i) {
-                $out[$i][$j] = 1.0 - $d * (1.0 - $rows[$i][$j]);
+                $row[] = 1.0 - $d * (1.0 - $m.rows[$i][$j]);
+            } elseif ($j < $nd) {
+                $row[] = $d * $m.rows[$i][$j];
             } else {
-                $out[$i][$j] = $d * $rows[$i][$j];
+                $row[] = $m.rows[$i][$j];
             }
         }
+        $out[] = $row;
     }
     return $out;
 }
 
 # stationaryVector solves v M = v, Σ v = 1 over the first nd alleles: the
 # system (M^T - I) v = 0 with its last equation replaced by Σ v = 1, by
-# Gaussian elimination with partial pivoting.
-func stationaryVector(rows as list of list of float, nd as int, locus as string) {
+# linalg.solve (Gauss-Jordan with partial pivoting, in Go: the O(n³) loop
+# interpreted took 2.5 s at 120 alleles). Uniqueness is checked on the
+# matrix's zero pattern first (`reachesFrom`), since the solve only rejects
+# an exactly zero pivot.
+func stationaryVector(m as MutationMatrix, nd as int, alleles as LocusAlleles) {
+    def hub as int init 0;
+    for (def i in 1..$nd) {
+        if ($alleles.frequencies[$i] > $alleles.frequencies[$hub]) {
+            $hub = $i;
+        }
+    }
+    if (not reachesFrom($m, $nd, $hub)) {
+        noStationary($m.locus);
+    }
     def a as list of list of float init [];
+    def b as list of float init [];
     for (def r in 0..$nd) {
         def eq as list of float init [];
         for (def c in 0..$nd) {
             if ($r == $nd - 1) {
                 $eq[] = 1.0;
             } elseif ($r == $c) {
-                $eq[] = $rows[$c][$r] -1.0;
+                $eq[] = $m.rows[$c][$r] -1.0;
             } else {
-                $eq[] = $rows[$c][$r];
+                $eq[] = $m.rows[$c][$r];
             }
-        }
-        if ($r == $nd - 1) {
-            $eq[] = 1.0;
-        } else {
-            $eq[] = 0.0;
         }
         $a[] = $eq;
-    }
-    # Gauss-Jordan: pivot on each column, clear it from every other row.
-    for (def col in 0..$nd) {
-        def best as int init $col;
-        for (def r in $col + 1..$nd) {
-            if (math.abs($a[$r][$col]) > math.abs($a[$best][$col])) {
-                $best = $r;
-            }
-        }
-        if (math.abs($a[$best][$col]) < PIVOT_TOLERANCE) {
-            fail("locus '" + $locus + "': the mutation matrix has no unique stationary" +
-                " distribution, so PM cannot be applied");
-        }
-        if ($best != $col) {
-            def tmp as list of float init $a[$col];
-            $a[$col] = $a[$best];
-            $a[$best] = $tmp;
-        }
-        def pivot as float init $a[$col][$col];
-        for (def r in 0..$nd) {
-            if ($r != $col and $a[$r][$col] != 0.0) {
-                $a[$r] = reduced($a[$r], $a[$col], $a[$r][$col] / $pivot);
-            }
+        if ($r == $nd - 1) {
+            $b[] = 1.0;
+        } else {
+            $b[] = 0.0;
         }
     }
     def v as list of float init [];
-    for (def r in 0..$nd) {
-        $v[] = $a[$r][$nd] / $a[$r][$r];
+    try {
+        $v = linalg.solve($a, $b);
+    } catch (e) {
+        noStationary($m.locus);
+    }
+    for (def x in $v) {
+        if ($x <= 0.0) {
+            noStationary($m.locus);
+        }
     }
     return $v;
 }
 
-# reduced is `row - f * pivot`, the elimination step.
-func reduced(row as list of float, pivot as list of float, f as float) {
-    def out as list of float init [];
-    for (def c in 0..len($row)) {
-        $out[] = $row[$c] -$f * $pivot[$c];
+func noStationary(locus as string) {
+    fail("locus '" + $locus + "': the mutation matrix has no unique stationary" +
+        " distribution, so PM cannot be applied");
+}
+
+# reachesFrom reports whether every detectable allele can mutate, in some
+# number of steps, to allele `hub`. Then every closed class contains `hub`,
+# so there is one and the stationary distribution is unique. The builders'
+# zero patterns are symmetric for positive frequencies (no transient allele),
+# so with `hub` the most frequent allele the converse holds too: false means
+# two closed classes (Stepwise with microvariants and `rate2` 0).
+func reachesFrom(m as MutationMatrix, nd as int, hub as int) {
+    def reached as list of bool init [];
+    for (def i in 0..$nd) {
+        $reached[] = $i == $hub;
     }
-    return $out;
+    def queue as list of int init [$hub];
+    def head as int init 0;
+    while ($head < len($queue)) {
+        def j as int init $queue[$head];
+        $head = $head + 1;
+        for (def i in 0..$nd) {
+            if (not $reached[$i] and $m.rows[$i][$j] > 0.0) {
+                $reached[$i] = true;
+                $queue[] = $i;
+            }
+        }
+    }
+    return len($queue) == $nd;
 }
 
 # indexOfAllele maps labels to matrix positions.
@@ -962,7 +1148,7 @@ func trioTerms(
  * sub-population given the four parental alleles (Balding-Nichols), without
  * mutation. With a silent allele, single-peak phenotypes are summed over
  * `aa` and `a/silent`, each parental pair weighted by its joint probability.
- * With `MENDELIAN` (or any rate 0) it returns exactly
+ * With `MENDELIAN` (or both rates 0 and no silent allele) it returns exactly
  * `kinship.paternityIndexAtTheta` under `kinship.NO_MUTATION`.
  * @param db {FrequencyDb} the reference frequencies
  * @param mother {Genotype} the mother's genotype
@@ -972,9 +1158,9 @@ func trioTerms(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the paternity index at this locus
  * @throws {Error} kind "mutation" on an out-of-range theta, genotypes at
- *   different loci, or a child genotype impossible given the mother (a
- *   maternal exclusion when the maternal model has no mutation); see
- *   `mutationMatrix` for model errors
+ *   different loci, a typed `SILENT_ALLELE`, or a child genotype impossible
+ *   given the mother (a maternal exclusion when the maternal model has no
+ *   mutation); see `mutationMatrix` for model errors
  */
 export func paternityIndexAt(
     db as forensics.FrequencyDb,
@@ -1029,7 +1215,7 @@ export func paternityIndexAt(
     return $x / $y;
 }
 
-# commonLoci and requireCovered mirror kinship.j: a locus every person carries
+# commonLoci and coveredLoci mirror kinship.j: a locus every person carries
 # but the table lacks is never dropped silently.
 func commonLoci(profiles as list of forensics.Profile) {
     def out as list of string init [];
@@ -1080,7 +1266,8 @@ func coveredLoci(db as forensics.FrequencyDb, profiles as list of forensics.Prof
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the combined paternity index
  * @throws {Error} kind "mutation" on an out-of-range theta, if the trio shares
- *   no locus, shares one the table does not cover, or on a maternal exclusion
+ *   no locus, shares one the table does not cover, on a maternal exclusion, or
+ *   if the CPI exceeds the float range
  */
 export func paternityIndex(
     mother as forensics.Profile,
@@ -1093,14 +1280,19 @@ export func paternityIndex(
     def loci as list of string init coveredLoci($db, [$mother, $allegedFather, $child]);
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             paternityIndexAt(
-            $db,
-            $mother.loci[$locus],
-            $child.loci[$locus],
-            $allegedFather.loci[$locus],
-            $model,
-            $theta);
+                $db,
+                $mother.loci[$locus],
+                $child.loci[$locus],
+                $allegedFather.loci[$locus],
+                $model,
+                $theta),
+            "combined paternity index",
+            $child.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -1122,8 +1314,9 @@ export func paternityIndex(
  * @param model {ParentageModel} the mutation models and silent frequencies
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the paternity index at this locus
- * @throws {Error} kind "mutation" on an out-of-range theta or genotypes at
- *   different loci; see `mutationMatrix` for model errors
+ * @throws {Error} kind "mutation" on an out-of-range theta, genotypes at
+ *   different loci, a typed `SILENT_ALLELE`, or a child genotype of
+ *   probability zero in the population; see `mutationMatrix` for model errors
  */
 export func duoPaternityIndexAt(
     db as forensics.FrequencyDb,
@@ -1185,7 +1378,8 @@ export func duoPaternityIndexAt(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the combined paternity index
  * @throws {Error} kind "mutation" on an out-of-range theta, if the two share
- *   no locus, or share one the table does not cover
+ *   no locus, share one the table does not cover, or if the CPI exceeds the
+ *   float range
  */
 export func duoPaternityIndex(
     child as forensics.Profile,
@@ -1197,13 +1391,18 @@ export func duoPaternityIndex(
     def loci as list of string init coveredLoci($db, [$allegedFather, $child]);
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             duoPaternityIndexAt(
-            $db,
-            $child.loci[$locus],
-            $allegedFather.loci[$locus],
-            $model,
-            $theta);
+                $db,
+                $child.loci[$locus],
+                $allegedFather.loci[$locus],
+                $model,
+                $theta),
+            "duo paternity index",
+            $child.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -1338,9 +1537,11 @@ export func kinshipLRAt(
  * @param silent {map of string to float} locus -> silent allele frequency; absent means 0
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
- * @throws {Error} kind "mutation" on an out-of-range theta, if the profiles
- *   share no locus, share one the table does not cover, or if `alt` gives an
- *   observed pair probability zero
+ * @throws {Error} kind "mutation" on an out-of-range theta or silent
+ *   frequency, if the profiles share no locus, share one the table does not
+ *   cover, if `alt` gives an observed pair probability zero, or if the LR
+ *   exceeds the float range (use `log10KinshipLR`); at a locus with silent
+ *   frequency 0, kind "kinship" from `kinship.kinshipLRAtTheta`
  */
 export func kinshipLR(
     a as forensics.Profile,
@@ -1354,8 +1555,51 @@ export func kinshipLR(
     def loci as list of string init coveredLoci($db, [$b, $a]);
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             kinshipLRAt(
+                $db,
+                $a.loci[$locus],
+                $b.loci[$locus],
+                $rel,
+                $alt,
+                silentAt($silent, $locus),
+                $theta),
+            "kinship LR",
+            $a.id,
+            $b.id,
+            "; use log10KinshipLR");
+    }
+    return $out;
+}
+
+/**
+ * The base-10 logarithm of `kinshipLR`: the sum over the shared loci of
+ * `log10(kinshipLRAt)`. For panels whose LR leaves the float range.
+ * @param a {Profile} one person's profile
+ * @param b {Profile} the other's
+ * @param rel {Relationship} the numerator hypothesis
+ * @param alt {Relationship} the denominator hypothesis
+ * @param db {FrequencyDb} the reference frequencies
+ * @param silent {map of string to float} locus -> silent allele frequency; absent means 0
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "mutation" as `kinshipLR`, or if a locus has ratio 0
+ *   (an exclusion, which has no logarithm); kind "kinship" as `kinshipLR`
+ */
+export func log10KinshipLR(
+    a as forensics.Profile,
+    b as forensics.Profile,
+    rel as kinship.Relationship,
+    alt as kinship.Relationship,
+    db as forensics.FrequencyDb,
+    silent as map of string to float,
+    theta as float) {
+    checkTheta($theta);
+    def loci as list of string init coveredLoci($db, [$b, $a]);
+    def out as float init 0.0;
+    for (def locus in $loci) {
+        def lr as float init kinshipLRAt(
             $db,
             $a.loci[$locus],
             $b.loci[$locus],
@@ -1363,6 +1607,11 @@ export func kinshipLR(
             $alt,
             silentAt($silent, $locus),
             $theta);
+        if ($lr <= 0.0) {
+            fail("profiles '" + $a.id + "' and '" + $b.id + "': the ratio at locus '" + $locus +
+                "' is 0 (an exclusion), which has no logarithm");
+        }
+        $out = $out + math.log10($lr);
     }
     return $out;
 }

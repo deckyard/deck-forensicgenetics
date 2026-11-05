@@ -32,9 +32,14 @@ PM scaling are in [Formulae and sources](../project/formulae.md#familias-mutatio
   `SILENT_ALLELE` when the locus has a silent frequency above 0. Equal and
   Proportional therefore depend on how many alleles the table lists.
 - Stepwise needs every detectable allele to be a repeat count with at most
-  one decimal (`15`, `15.2`). The microvariant class is FamiliasLocus's
-  `microgroup`: `round(10 (v - round(v)))`, so `15.7` and `15.3` are different
-  classes.
+  one decimal (`15`, `15.2`), no `.0` decimal (`15.0` is written `15`), and
+  no two labels with one repeat value (`10` and `010`): such a pair would be
+  two alleles zero steps apart. Repeat values above `1e6` throw. The
+  microvariant class is FamiliasLocus's `microgroup`:
+  `round(10 (v - round(v)))` with R's `round` (halves to even), so `15.7` and
+  `15.3` are different classes, and so are `15.5` (class -5) and `14.5` /
+  `16.5` (class 5).
+- PM needs at most `MAX_STATIONARY_ALLELES` (200) detectable alleles.
 - The silent allele never mutates and is never mutated to; its row and column
   are those of the identity.
 - `rate` (and a `perLocus` override) is the integer-step rate for Stepwise;
@@ -62,10 +67,18 @@ PM scaling are in [Formulae and sources](../project/formulae.md#familias-mutatio
 
 - a rate or `rate2` outside `[0, 1)`, a range not above 0, `rate + rate2`
   above 1, a silent frequency outside `[0, 1)`, theta outside `[0, 1)`
-- an unknown model name in a hand-built `MutationSpec`
-- Stepwise over an allele that is not a repeat count with at most one decimal
+- an unknown model name in a hand-built `MutationSpec`, or a rate in force at
+  the locus (`rate` or its `perLocus` override) outside `[0, 1)`; for
+  Stepwise also `rate2`, `range` and `rate + rate2` (checked before a zero
+  rate short-cuts to the identity)
+- Stepwise over an allele that is not a repeat count with at most one decimal,
+  a `.0` label, a repeat value above `1e6`, two labels with one repeat value (the message names both), a
+  `range` whose `range^k` for the largest step `k` within a microvariant
+  class falls outside about `1e±300` (it would underflow to 0 or overflow), or
+  a hand-built `MutationSpec` with `range` not above 0
 - a matrix entry outside `[0, 1]` or a row not summing to 1 (a Proportional
   rate too high for the frequencies)
+- PM over more than `MAX_STATIONARY_ALLELES` detectable alleles
 - a PM transformation that does not exist (a scaled diagonal below 0, common
   with a rare allele) or a matrix with no unique stationary distribution
   (Stepwise with microvariants and `rate2` 0)
@@ -73,11 +86,16 @@ PM scaling are in [Formulae and sources](../project/formulae.md#familias-mutatio
 - genotypes at different loci; profiles sharing no locus, or sharing one the
   table does not cover (never dropped silently)
 - a child genotype impossible given the mother (a maternal exclusion when the
-  maternal model has no mutation); an alternative giving the observations
-  probability zero
+  maternal model has no mutation), or of probability zero in the population
+  (duo); an alternative giving the observations probability zero
+- a CPI or LR product past the float range (`kinshipLR` names
+  `log10KinshipLR`); a locus ratio of 0 in `log10KinshipLR`
+- an allele not in the matrix (`transitionProbability`), or a matrix and a
+  `LocusAlleles` listing different alleles (`overallRate`, `isStationary`)
 - `aabb2003Rates` with anything but `"total"`, `"paternal"` or `"maternal"`
 
 `kinshipLRAt` with `silent` 0 delegates to `kinship.kinshipLRAtTheta` and
-throws its `"kinship"` errors (mismatched loci, a zero alternative);
-`kinshipModelWithRates` throws `"kinship"` on a bad rate. A missing allele frequency is the core's `"forensicgenetics"`
-error.
+throws its `"kinship"` errors (mismatched loci, a zero alternative), and so do
+`kinshipLR` / `log10KinshipLR` at such a locus;
+`kinshipModelWithRates` throws `"kinship"` on a bad rate. A missing allele
+frequency is the core's `"forensicgenetics"` error.

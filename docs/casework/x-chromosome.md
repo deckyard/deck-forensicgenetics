@@ -110,8 +110,8 @@ def linked as xstr.XFrequencies init xstr.withLinkageGroup($model, $lg1);
 
 `$haplotypes` maps `haplotypeKey(alleles)` (alleles in the group's locus
 order, joined by `-`) to a frequency from a population study; the deck
-bundles none. `minFrequency` is the score for a haplotype the table lacks,
-and its choice is yours.
+bundles none. `minFrequency` is the score for a haplotype the table lacks;
+the caller chooses it, no floor is imposed.
 
 Two models, and what each assumes:
 
@@ -135,7 +135,8 @@ tests, two full brothers sharing a two-locus haplotype at `.1 × .1` give
 A profile typed at part of a group throws: type the whole group, or score
 those loci with a model without the group. Female phase is unknown and is
 summed over: every pair of haplotypes her genotypes allow, `2^(h-1)` pairs
-for `h` heterozygous loci.
+for `h` heterozygous loci, at most `MAX_GROUP_HETEROZYGOUS_LOCI` (12) per
+group.
 
 `examples/xstr.j` runs a half-sister question, a daughter trio and duo, and
 the same pair with LG1 as a haplotype, on synthetic numbers. See

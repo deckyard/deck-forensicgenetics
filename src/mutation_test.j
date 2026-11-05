@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for mutation.j. Run with `jennifer test mutation_test.j`.
 #
@@ -12,6 +12,7 @@
 # equality.
 use testing;
 use math;
+use strings;
 
 def const TOL as float init 0.000000001;
 
@@ -1050,4 +1051,282 @@ func testTrioMatchesBruteForceEnumeration() {
     for (def t in $trios) {
         near(paternityIndexAt($db, $t[0], $t[1], $t[2], $model, 0.0), bruteTrio($la, $fm, $mm, $t));
     }
+}
+
+# --- stepwise label and range checks ----------------------------------------
+
+func stepwisePointZeroLabel() {
+    mutationMatrix(stepwiseModel(0.002, 0.1), onLocus("T", {"10.0": 0.5, "11": 0.5}));
+}
+
+func stepwiseTypedPointZero() {
+    # "10" and the typed "10.0" are one repeat value: before the check they
+    # were two alleles 0 steps apart, and "10" -> "10.0" took 90% of the rate.
+    def la as LocusAlleles init locusAlleles(fixture(), "L", ["10.0"], 0.0);
+    mutationMatrix(stepwiseModel(0.002, 0.1), $la);
+}
+
+func stepwiseTrioPointZero() {
+    # The reviewer's trio: mother 11/12, child 10.0/11, alleged father 10/10
+    # gave PI 0.72 instead of an exclusion-level index.
+    paternityIndexAt(
+        fixture(),
+        gt("11", "12"),
+        gt("10.0", "11"),
+        gt("10", "10"),
+        parentageModel(stepwiseModel(0.002, 0.1), NO_MUTATION),
+        0.0);
+}
+
+func stepwiseLeadingZero() {
+    mutationMatrix(stepwiseModel(0.002, 0.1), onLocus("T", {"10": 0.5, "010": 0.5}));
+}
+
+# Alleles 5, 12, 40: from 5 to 40 is 35 steps. 1e-21^35 = 1e-735 underflows
+# to 0 (and the row from 40 then sums to 0); 1e21^35 overflows.
+func rangeUnderflow() {
+    mutationMatrix(
+        stepwiseModel(0.002, 0.000000000000000000001),
+        onLocus("T", {"5": 0.3, "12": 0.4, "40": 0.3}));
+}
+
+func rangeOverflow() {
+    mutationMatrix(
+        stepwiseModel(0.002, 1000000000000000000000.0),
+        onLocus("T", {"5": 0.3, "12": 0.4, "40": 0.3}));
+}
+
+func rangeLiteralZero() {
+    def m as MutationSpec init stepwiseModel(0.002, 0.1);
+    $m.range = 0.0;
+    mutationMatrix($m, onLocus("T", {"5": 0.3, "12": 0.4, "40": 0.3}));
+}
+
+func testStepwiseLabelAndRangeChecks() {
+    for (def f in [
+        "stepwisePointZeroLabel",
+        "stepwiseTypedPointZero",
+        "stepwiseTrioPointZero",
+        "stepwiseLeadingZero",
+        "rangeUnderflow",
+        "rangeOverflow",
+        "rangeLiteralZero"
+    ]) {
+        testing.assertThrows($f, "mutation");
+    }
+    def msg as string init "";
+    try {
+        stepwiseLeadingZero();
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertTrue(strings.contains($msg, "'10'") and strings.contains($msg, "'010'"));
+    # Range 1e-21 over adjacent alleles stays in range: 10 -> 11 and 10 -> 12
+    # weigh 1e-21 and 1e-42, so M[10][11] = .002 / (1 + 1e-21) = .002 to
+    # double precision.
+    def m as MutationMatrix init mutationMatrix(
+        stepwiseModel(0.002, 0.000000000000000000001),
+        onLocus("T", {"10": 0.3, "11": 0.4, "12": 0.3}));
+    near(at($m, "10", "11"), 0.002);
+}
+
+# --- round 2 ----------------------------------------------------------------
+
+# FamiliasLocus: microgroup <- round((v - round(v)) * 10), R's round taking
+# halves to even. round(14.5) = 14 and round(16.5) = 16 give class 5;
+# round(15.5) = 16 gives class -5; 15 is class 0. Rate .01, range .5, rate2
+# .001 over {15, 14.5, 15.5, 16.5}: from 14.5 the one in-class allele 16.5
+# takes all of rate (.01), the two others rate2 / 2 = .0005 each, the diagonal
+# 1 - .01 - .001 = .989. 15 and 15.5 are alone in their classes: diagonal
+# 1 - rate2 = .999, rate2 / 3 to each other allele.
+func testHalfMicrovariantClassesRoundHalfToEven() {
+    def m as MutationMatrix init mutationMatrix(
+        extendedStepwiseModel(0.01, 0.5, 0.001),
+        onLocus("H", {"15": 0.25, "14.5": 0.25, "15.5": 0.25, "16.5": 0.25}));
+    near(at($m, "14.5", "14.5"), 0.989);
+    near(at($m, "14.5", "16.5"), 0.01);
+    near(at($m, "14.5", "15.5"), 0.0005);
+    near(at($m, "14.5", "15"), 0.0005);
+    near(at($m, "16.5", "14.5"), 0.01);
+    near(at($m, "15.5", "15.5"), 0.999);
+    near(at($m, "15.5", "14.5"), 0.001 / 3.0);
+    near(at($m, "15", "16.5"), 0.001 / 3.0);
+    assertRowsSumToOne($m);
+}
+
+func literalNegativeRate() {
+    def s as MutationSpec init equalModel(0.1);
+    $s.rate = -0.3;
+    mutationMatrix($s, allelesL(0.0));
+}
+
+func literalUnknownModel() {
+    def s as MutationSpec init NO_MUTATION;
+    $s.model = "bogus";
+    mutationMatrix($s, allelesL(0.0));
+}
+
+func literalNegativeLocusRate() {
+    def s as MutationSpec init equalModel(0.1);
+    $s.perLocus["L"] = -0.1;
+    mutationMatrix($s, allelesL(0.0));
+}
+
+func literalNegativeRate2() {
+    def s as MutationSpec init stepwiseModel(0.0, 0.5);
+    $s.rate2 = -0.1;
+    mutationMatrix($s, allelesL(0.0));
+}
+
+# A `MutationSpec` literal used to fall through to the identity when its rate
+# was not positive, whatever the model name or the rate's sign.
+func testLiteralSpecsAreValidated() {
+    for (def f in [
+        "literalNegativeRate",
+        "literalUnknownModel",
+        "literalNegativeLocusRate",
+        "literalNegativeRate2"
+    ]) {
+        testing.assertThrows($f, "mutation");
+    }
+}
+
+func hugeRepeatValue() {
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("t"),
+        "T",
+        100,
+        {"10": 0.5, "11": 0.4});
+    mutationMatrix(
+        stepwiseModel(0.002, 0.1),
+        locusAlleles($db, "T", ["99999999999999999999"], 0.0));
+}
+
+# 1e20 does not fit math.round's int: the error was kind "runtime".
+func testHugeRepeatValueThrowsMutation() {
+    testing.assertThrows("hugeRepeatValue", "mutation");
+}
+
+func stationaryTooManyAlleles() {
+    def fr as map of string to float init {};
+    for (def a in 0..MAX_STATIONARY_ALLELES + 1) {
+        $fr["{$a + 5}"] = 1.0 / convert.toFloat(MAX_STATIONARY_ALLELES + 1);
+    }
+    mutationMatrix(stationaryModel(equalModel(0.002)), onLocus("S", $fr));
+}
+
+func testStationaryAlleleCap() {
+    testing.assertThrows("stationaryTooManyAlleles", "mutation");
+    def msg as string init "";
+    try {
+        stationaryTooManyAlleles();
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertTrue(strings.contains($msg, "MAX_STATIONARY_ALLELES"));
+}
+
+# PM over a 5-allele Stepwise locus with a silent allele: the detectable block
+# is stationary under the normalised frequencies and keeps their expected
+# rate (the PM identities, formulae.md), and the silent row and column stay
+# those of the identity.
+func testPMWithSilentAllele() {
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("t"),
+        "P",
+        10000,
+        {"10": 0.1, "11": 0.15, "12": 0.4, "13": 0.25, "14": 0.1});
+    def la as LocusAlleles init locusAlleles($db, "P", [], 0.05);
+    def s as MutationMatrix init mutationMatrix(stationaryModel(stepwiseModel(0.004, 0.5)), $la);
+    testing.assertTrue(isStationary($s, $la));
+    near(overallRate($s, $la), overallRate(mutationMatrix(stepwiseModel(0.004, 0.5), $la), $la));
+    near(at($s, SILENT_ALLELE, SILENT_ALLELE), 1.0);
+    near(at($s, "12", SILENT_ALLELE), 0.0);
+    near(at($s, SILENT_ALLELE, "12"), 0.0);
+}
+
+# Each locus: allele 1 at 1e-20 with no floor (N = 0), both people 1/1.
+# Parent-child: P(b | a) = p, P(b) = p², LR 1/p = 1e20; trio and duo PI 1/p.
+# 21 loci multiply to 1e420, past the float range.
+func overflowProfiles() {
+    def db as forensics.FrequencyDb init forensics.db("tiny");
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..21) {
+        $db = forensics.withLocus($db, "L{$i}", 0, {"1": 0.00000000000000000001, "2": 0.5});
+        $gs[] = forensics.genotype("L{$i}", "1", "1");
+    }
+    return OverflowCase{db: $db, p: forensics.profile("a", $gs)};
+}
+
+def struct OverflowCase {
+    db as forensics.FrequencyDb,
+    p as forensics.Profile
+};
+
+func overflowKinship() {
+    def c as OverflowCase init overflowProfiles();
+    kinshipLR($c.p, $c.p, kinship.PARENT_CHILD, kinship.UNRELATED, $c.db, {"L0": 0.001}, 0.0);
+}
+
+func overflowTrio() {
+    def c as OverflowCase init overflowProfiles();
+    paternityIndex($c.p, $c.p, $c.p, $c.db, MENDELIAN, 0.0);
+}
+
+func overflowDuo() {
+    def c as OverflowCase init overflowProfiles();
+    duoPaternityIndex($c.p, $c.p, $c.db, MENDELIAN, 0.0);
+}
+
+func testProductsOverflowAsMutationErrors() {
+    for (def f in ["overflowKinship", "overflowTrio", "overflowDuo"]) {
+        testing.assertThrows($f, "mutation");
+    }
+    def msg as string init "";
+    try {
+        overflowKinship();
+    } catch (e) {
+        $msg = $e.message;
+    }
+    testing.assertTrue(strings.contains($msg, "log10KinshipLR"));
+    # Without a silent allele each locus is 1e20, so the sum is 21 * 20.
+    def c as OverflowCase init overflowProfiles();
+    near(
+        log10KinshipLR($c.p, $c.p, kinship.PARENT_CHILD, kinship.UNRELATED, $c.db, {}, 0.0),
+        420.0);
+}
+
+func log10KinshipExclusion() {
+    log10KinshipLR(
+        forensics.profile("a", [gt("10", "10")]),
+        forensics.profile("b", [gt("12", "12")]),
+        kinship.PARENT_CHILD,
+        kinship.UNRELATED,
+        fixture(),
+        {},
+        0.0);
+}
+
+# On a panel that fits the float range the log10 form is log10 of the
+# product, silent alleles included.
+func testLog10KinshipLRIsTheLogOfTheProduct() {
+    def a as forensics.Profile init forensics.profile(
+        "a",
+        [gt("10", "10"), forensics.genotype("M", "11", "12")]);
+    def b as forensics.Profile init forensics.profile(
+        "b",
+        [gt("10", "11"), forensics.genotype("M", "12", "12")]);
+    def silent as map of string to float init {"L": 0.01, "M": 0.02};
+    def lr as float init kinshipLR(
+        $a,
+        $b,
+        kinship.PARENT_CHILD,
+        kinship.UNRELATED,
+        twoLocus(),
+        $silent,
+        0.01);
+    near(
+        log10KinshipLR($a, $b, kinship.PARENT_CHILD, kinship.UNRELATED, twoLocus(), $silent, 0.01),
+        math.log10($lr));
+    testing.assertThrows("log10KinshipExclusion", "mutation");
 }
