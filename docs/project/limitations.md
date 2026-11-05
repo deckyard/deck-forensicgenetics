@@ -72,15 +72,17 @@ argument.
 
 ## Statistical scope
 
-### No theta in kinship or pedigree calculations
+### No theta in pedigree calculations
 
-[`kinship.j`](../casework/kinship.md) and
-[`pedigree.j`](../casework/pedigrees.md) use `θ = 0`. The sub-population
-correction does not extend to the IBD-1 term by substituting an allele
-frequency; it needs the full recursive sampling formula. Applying θ to some
-terms and not others would answer neither question. θ is applied where it is
-exact, in the single-source match probability. See
-[Theta](../concepts/theta.md).
+[`pedigree.j`](../casework/pedigrees.md) uses `θ = 0`. The sub-population
+correction needs the sampling formula over every founder allele of the
+pedigree jointly, which peeling's per-person messages do not carry; applying θ
+to founder priors alone would be wrong. Pairwise kinship and trio / duo
+paternity with θ are in [`kinship.j`](../casework/kinship.md) (the
+`...Theta` functions). See [Theta](../concepts/theta.md).
+
+The original `kinship.j` functions remain at `θ = 0` for compatibility; pass
+θ through the `...Theta` variants.
 
 ### Kinship is for outbred pairs
 
@@ -93,12 +95,15 @@ A consanguineous mating, or any other loop in the individual/family graph, is
 rejected by `pedigree.validate`. Loops need cutset conditioning, which is not
 implemented. A half-sibling pedigree is not a loop.
 
-### Mixtures stop at CPI / CPE
+### Mixtures stop at the semi-continuous LR
 
-CPI / CPE needs no contributor count but is weak: it does not use the
-suspect's profile, ignores peak heights, and fails under allele dropout. Full
-deconvolution (multi-contributor models with drop-in, dropout and peak
-heights, as in EuroForMix) is not implemented. See
+`mixture.j` uses allele presence, drop-out and drop-in (LRmix). Peak heights,
+stutter and degradation need a continuous model (EuroForMix, STRmix), which is
+not implemented. Drop-out is one probability per contributor, the same at
+every locus; homozygote drop-out is the `d²` approximation, not the
+Balding & Buckleton (2009) two-parameter form. Relatives as alternative
+contributors are not modelled. CPI / CPE remain for the
+no-assumption question and fail under drop-out. See
 [Mixtures](../casework/mixtures.md).
 
 ### EMPOP's phylogenetic alignment rules are not applied
@@ -113,7 +118,103 @@ complex indel. Check such a designation against EMPOP before quoting it.
 magnitude for paternal autosomal STR mutation, not a published figure. When a
 mutation model rescues a trio from a single inconsistency, the CPI is
 proportional to the rate at that locus, and observed per-locus rates vary
-about tenfold. Set published rates with `kinship.withLocusRate`.
+about tenfold. Set published rates with `kinship.withLocusRate`, or take the
+AABB 2003 rates bundled in [`mutation.j`](../casework/mutation-models.md)
+(`mutation.aabb2003Rates`, `mutation.kinshipModelWithRates`).
+
+### Mutation models stop at trios and duos
+
+`mutation.j`'s Familias models act in trio and duo paternity only. Pairwise
+kinship has no mutation term, and `pedigree.j` has no mutation at all; a
+pedigree with an untyped generation between typed relatives (where a
+non-stationary model would distort frequencies) is not covered. The bundled
+rates are one compilation (AABB 2003, 18 loci); its per-sex rates leave out
+mutations of unassigned origin, and no allele- or length-specific rates are
+modelled. The PM stationarisation fails for some models (a rare allele, or
+Stepwise with microvariants and `rate2` 0); the other Simonsson & Mostad
+methods (DP, RM) and Familias' `MaxStabilizedMutrate` bound are not
+implemented. Familias' "Custom" matrices cannot be supplied.
+
+### Silent alleles have one frequency per locus
+
+A silent allele is a per-locus frequency the caller supplies; nothing
+estimates it, and it does not depend on which allele is silenced or on the
+kit. It never mutates. A person showing no peak at a locus (silent/silent)
+cannot be entered; leave the locus out of that profile.
+
+### Population statistics assume Hardy-Weinberg and independent loci
+
+`popstats.j`'s frequency statistics (He, MP, PD, PIC, TPI, PE) are expected
+values under Hardy-Weinberg proportions, and the combined values multiply over
+loci. Neither holds exactly in a structured population. The `observed...`
+functions use the sample's genotype shares instead. Frequencies are used
+unfloored and rescaled to sum to 1; a partial table (sum below 0.95) is
+refused.
+
+### The multi-allelic HWE test is Monte Carlo
+
+`hweExactTest` is exact for two alleles only. For STR loci,
+`hwePermutationTest` estimates the exact p-value by permutation, with standard
+error about `sqrt(p (1 - p) / B)`. Full enumeration and Guo & Thompson's
+Markov chain are not implemented. No multiple-testing correction is applied.
+
+### F-statistics are the 1984 estimator only; the LD test is Monte Carlo
+
+`fStatistics` implements Weir & Cockerham (1984) for unlinked autosomal loci;
+there is no hierarchical (region / population) analysis, no bootstrap or
+jackknife interval over loci, no allele-size statistic (R_ST) and no
+alternative multilocus weighting (Weir 1996, Genepop). An individual missing at
+a locus is dropped from that locus only. `ldPermutationTest` estimates the
+exact p-value by permutation (the probability statistic; Genepop's default G
+statistic and its Markov chain are not implemented), within one population
+only; there is no combination across populations (Fisher's method) and no
+multiple-testing correction in `ldPermutationTests`. Haplotype frequencies and
+`D` / `r²` are not estimated.
+### X-STRs use theta 0
+
+`xstr.j` has no sub-population correction. Applying the sampling formula to
+X-STRs needs the haploid male draws and the haplotype alleles of a linkage
+group in one sequence; that extension is not implemented. Report the X-STR
+LR as a theta-0 figure.
+
+### Linked X-STRs are scored without recombination
+
+A `LinkageGroup` is inherited as one block, with no recombination between its
+loci, and groups are multiplied as if unlinked. Neither holds exactly: the
+Argus X-12 groups span a few centimorgans within, and the groups lie on one
+chromosome. The error is nil for a single meiosis from a father (his X passes
+whole) and grows with the number of female meioses between the two people.
+Models with recombination fractions and linkage disequilibrium (Tillmar et al.
+2011; FamLinkX, Kling, Dell'Amico & Tillmar 2015) are not implemented. The
+independent model ignores linkage disequilibrium and linkage altogether. See
+[X-chromosomal STRs](../casework/x-chromosome.md#linked-loci).
+
+### X-STR haplotype tables and floors are the caller's
+
+No X-STR allele or haplotype frequencies are bundled, and `linkageGroup`
+imposes no floor: an unlisted haplotype scores at the caller's
+`minFrequency`, or throws at 0. Haplotype tables need large samples, and a
+rare-haplotype floor can dominate the LR; report the table and the floor.
+X-STR kinship is pairwise (and trio / duo for a daughter); pedigrees with
+more typed people, X-STR mutation in `kinshipLR`, mutation in the mother, and
+X-STR power-of-exclusion statistics are not implemented.
+### Sampling-uncertainty allowances are single-source only
+
+`reporting.j` applies the size-bias correction and the Dirichlet posterior to
+the single-source RMP and its LR. Mixture, kinship and pedigree LRs get
+neither. The posterior treats loci as independent and reads counts as
+`p · 2N` from the published frequencies, so a table rounded to few digits
+gives slightly wrong counts. Combining the size-bias frequencies with θ
+through NRC II 4.2 is the deck's choice; the sources read state the
+frequencies only.
+
+### The verbal scale's band edges are a reading
+
+The ENFSI (2015) table gives ranges ("10 - 100") without inclusive ends and
+starts its first band at 2. `reporting.verbalEquivalent` closes each band at
+the top and treats `(1, 2)` as weak support; `VerbalEquivalent` states the
+bounds it used. The guideline presents the scale as an illustration; a
+laboratory with its own scale should not use this one.
 
 ## Performance
 
@@ -167,11 +268,78 @@ rows, the pedigree graph walks).
 the member map `n` times: unnoticeable at tens of members, noticeable at
 hundreds. The likelihood functions are unaffected.
 
+### The mixture LR enumerates genotypes
+
+`mixture.j` sums over every genotype combination of the unknowns: about
+`(k(k+1)/2)^u / u!` terms for `k` allele classes. Measured, one locus, Hd
+with `u` unknowns, θ = 0.01: 6 alleles, `u = 2`, 0.04 s; 10 alleles,
+`u = 2`, 0.15 s; 6 alleles, `u = 3`, 0.3 s; 8 alleles, `u = 3`, 1.2 s;
+10 alleles, `u = 3`, 4.0 s. `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10)
+make larger cases throw.
+
+### The permutation HWE test is linear in sample size times permutations
+
+`hwePermutationTest` costs about 7 µs per person per permutation: 500 people
+at 1000 permutations take 3.8 s, so `DEFAULT_PERMUTATIONS` (10000) takes about
+40 s. Lower the count for screening and raise it for the loci near the
+threshold.
+
+### The posterior bound is Monte Carlo
+
+`reporting.log10RmpQuantiles` draws two or three gamma deviates per locus per
+draw, about 25 µs each on the default binary: 10,000 draws over 20 loci take
+roughly 15 s. Its answer carries Monte Carlo error, about
+`sqrt(q (1 - q) / draws)` on the probability scale; fix the seed to reproduce
+it.
+### Mutation matrices are rebuilt per locus and call
+
+Every `mutation.paternityIndexAt` / `duoPaternityIndexAt` builds its
+matrices over the locus's whole allele table: `O(n²)` per model, and `O(n³)`
+with PM (a linear solve). A 60-allele locus with two PM models takes about
+0.3 s; ordinary tables a few milliseconds per locus.
+
+### Database search cost
+
+Measured on 5000 synthetic profiles x 24 loci, query typed at all 24
+(`jennifer` 0.25.0-dev): `search.search` 1.7 s, `search.familialSearch`
+0.85 s, both linear in the database size (1000 profiles: 0.34 s / 0.22 s).
+`familialSearch` memoises `kinship.kinshipLRAt` per locus and candidate
+genotype; calling `kinship.kinshipLR` per candidate took 34 s for the same
+run. On `jennifer-tiny` the cost grows faster than linearly (1000: 0.8 s /
+0.7 s; 5000: 13.7 s / 11.0 s): every allocation pays for garbage collection
+over the live database. Building the 5000 profiles took 2.4 s (tiny 4.1 s).
+
+### Search verdicts are counting rules
+
+`search.search` classes candidates by counts of identical, drop-out and
+mismatching loci against thresholds the caller sets. It does not weigh rare
+against common alleles, model drop-in, or treat a mismatch at a high-mutation
+locus differently. Report a candidate with an RMP or LR over its loci.
+Drop-out is recognised only as a query homozygote against a candidate
+heterozygote carrying that allele.
+
+### Familial search ranks, it does not identify
+
+`search.familialSearch` uses `kinship.kinshipLR` (theta 0). In a large
+database unrelated people reach high LRs by chance, so the ranking is a
+shortlist; half siblings, grandparents and avuncular relatives are
+indistinguishable. In `examples/search.j` a planted full sibling typed at
+eight loci ranks 19th of 200. There is no `log10` variant: a scored LR that
+overflows a float raises a runtime error.
+
+### Built-in panels cover a fixed list of kits
+
+`panels.j` ships eleven panels whose locus lists are documented by the
+manufacturer or the standard; other kits need `panels.customPanel`.
+`normalizeLocus` knows the aliases listed in [panels](../reference/panels.md)
+and passes any other name through unchanged.
+
 ### Long panels underflow
 
 `randomMatchProbability` and `pedigreeLikelihood` return plain products. Use
 `log10RandomMatchProbability`, `log10PedigreeLikelihood`, or `pedigreeLR`,
-which takes the ratio locus by locus.
+which takes the ratio locus by locus. `mixture.mixtureLR` multiplies locus
+LRs; `mixture.log10MixtureLR` sums their logarithms.
 
 ## Reporting
 
@@ -182,5 +350,11 @@ with it:
 - θ
 - the loci used, especially if a profile was narrowed
 - the alternative hypothesis (unrelated, a brother, an unknown man)
+- for a mixture LR, both hypotheses' contributors, the drop-out and drop-in
+  probabilities
 - for a probability of paternity, the prior
 - for a lineage marker, the database and its size
+- for a sampling-uncertainty bound, the method (size-bias or posterior), the
+  prior, the quantile, the number of draws and the seed
+- for a verbal equivalent, the scale and its band edges (`VerbalEquivalent`
+  holds them)

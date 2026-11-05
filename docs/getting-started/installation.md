@@ -91,23 +91,30 @@ From the deck root:
 for f in src/*_test.j; do jennifer test "$f"; done
 ```
 
-All four overlays report `0 failed`. One example per topic runs against the
+Every overlay reports `0 failed`. One example per topic runs against the
 synthetic table in `examples/lib/exampledb.j`:
 
 ```sh
 jennifer run examples/matchprobability.j   # RMP, LR, and a mixture's CPI / CPE
 jennifer run examples/paternity.j          # trio paternity across a mutation
 jennifer run examples/pedigree.j           # deficient paternity through two grandparents
+jennifer run examples/popstats.j           # forensic-efficiency table, HWE permutation test
 jennifer run examples/lineage.j            # mtDNA nomenclature and Y-STR comparison
+jennifer run examples/mixture.j            # mixture LR with drop-out and drop-in
+jennifer run examples/search.j             # direct and familial database search
+jennifer run examples/reporting.j          # size-bias LR, posterior bound, ENFSI verbal scale
+jennifer run examples/mutation.j           # Familias mutation models, silent alleles
+jennifer run examples/xstr.j               # X-STR kinship and daughter paternity
+jennifer run examples/popstructure.j       # F-statistics and LD tests
 ```
 
 ## Repository layout
 
 | Path | What it is |
 | --- | --- |
-| `src/*.j` | the deck: `forensicgenetics.j`, `kinship.j`, `pedigree.j`, `lineage.j` |
+| `src/*.j` | the deck: the core `forensicgenetics.j` and ten sibling modules |
 | `src/*_test.j` | white-box test overlays, run with `jennifer test` |
-| `examples/` | four runnable programs, one per topic |
+| `examples/` | eleven runnable programs, one per topic |
 | `examples/lib/exampledb.j` | the synthetic frequency table the examples build |
 | `docs/` | this documentation |
 | `LICENSE` | the LGPL-3.0 text, with the GPL-3.0 it incorporates |

@@ -6,8 +6,14 @@
 
 Forensic and statistical genetics for [Jennifer](https://jennifer-lang.dev/):
 STR random match probabilities with the NRC II theta correction, mixture
-CPI / CPE, kinship and trio paternity likelihood ratios, whole-pedigree
-likelihoods by Elston-Stewart peeling, and mtDNA / Y-STR haplotype statistics.
+CPI / CPE, semi-continuous (LRmix) mixture likelihood ratios, kinship and trio
+paternity likelihood ratios (with Familias mutation models and silent
+alleles), whole-pedigree likelihoods by Elston-Stewart peeling, mtDNA / Y-STR
+haplotype statistics, and X-STR kinship and daughter paternity likelihood
+ratios. For the population samples behind a table: Weir & Cockerham
+F-statistics (θ / F_ST) and a genotypic linkage-disequilibrium test. For
+reporting: the size-bias correction, a Dirichlet posterior bound on a match
+probability and the ENFSI verbal scale for a likelihood ratio.
 It works on profiles and reference allele frequencies, not on sequences.
 Requires Jennifer 0.25.0 or newer; no deck dependencies, and it runs on
 `jennifer-tiny`.
