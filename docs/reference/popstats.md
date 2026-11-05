@@ -18,16 +18,18 @@ struct fields are in the [Cheatsheet](cheatsheet.md#popstats).
 - `unbiasedHeterozygosity` needs the locus's `n`; with `n == 0` it throws.
 - Combined values assume independent loci. `combinedStats` takes
   `powerOfDiscrimination` as `1 - Π MP`, so the combined PD keeps the
-  precision of the match probabilities.
+  precision of the match probabilities. It throws when `Π TPI` passes the
+  float maximum (about 1.8e308).
 - A sample is a `list of forensics.Genotype`, all at one locus, one entry per
   person. `withEstimatedLocus` sets the locus's `n` to the sample size.
 - `hweExactTest` is exact for one or two alleles and throws on more;
   `hwePermutationTest` takes any number. Both return 1.0 for a monomorphic
-  sample. Probabilities within a relative 1e-7 count as ties.
+  sample. Probabilities within a relative 1e-7 count as ties. `hweExactTest`
+  returns 0.0 when the p-value is below float range; `hwePermutationTest`
+  never returns 0.
 - `hwePermutationTest` uses its own Park-Miller generator; `math.rand` is not
   touched. Seed in `[1, 2147483646]`, permutations in
   `[1, MAX_PERMUTATIONS]`.
-
 - F-statistics take one genotype sample per population at one locus
   (`fStatistics`) or profiles grouped by population (`fStatisticsTable`,
   which leaves out a profile untyped at the locus). `fStatistics` returns the
@@ -58,6 +60,9 @@ Guide: [Population statistics](../concepts/population-statistics.md),
 - an empty table, an empty `combinedStats` / `combinedPower` /
   `log10CombinedComplement` input, a power outside `[0, 1]`, or a power of 1
   in `log10CombinedComplement`
+- a `combinedStats` row with `matchProbability` outside `(0, 1]`, a power of
+  exclusion outside `[0, 1)` or `typicalPaternityIndex` not above 0, or a
+  `Π TPI` past the float maximum
 - an empty sample, a sample mixing loci, or an empty allele label
 - `observedTypicalPaternityIndex` on a sample with no homozygote
 - `hweExactTest` on more than two alleles
@@ -66,8 +71,8 @@ Guide: [Population statistics](../concepts/population-statistics.md),
   or a mean sample size of one individual or less
 - `fst` / `fit` with one population; `fst` / `fit` / `fis` on a zero
   denominator
-- `fStatisticsTable` with no loci, or a population nobody in which is typed
-  at a locus; `combineFStatistics` on an empty table or mixed population
+- `fStatisticsTable` with no loci, or a population with nobody typed at a
+  locus; `combineFStatistics` on an empty table or mixed population
   counts
 - `ldPermutationTest` on samples of different lengths or at the same locus;
   `ldPermutationTests` with no profiles or fewer than two loci

@@ -29,8 +29,8 @@ One `LocusStats` per locus:
 | `powerOfExclusionTrio` | share of random men excluded, mother typed |
 | `powerOfExclusionDuo` | share of random men excluded, mother untyped |
 
-All assume Hardy-Weinberg proportions. Single values are available directly,
-e.g. `popstats.powerOfDiscrimination($db, "TH01")`.
+All assume Hardy-Weinberg proportions. Each has its own function, e.g.
+`popstats.powerOfDiscrimination($db, "TH01")`.
 
 `matchProbability` averages over all genotypes. It is not the random match
 probability of a particular profile; that is

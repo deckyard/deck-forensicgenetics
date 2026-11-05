@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Reporting a single-source match: allowances for the finite size of the
@@ -12,24 +12,28 @@
  * allowances for that sampling error:
  *
  * - the size-bias correction (Balding & Nichols 1994, as stated in the UK
- *   Forensic Science Regulator's FSR-GUI-0012, 2026, section 11.3): the suspect's and
- *   the offender's alleles are added to the database before the frequency is
- *   taken, `(x + 2) / (2N + 4)` for each allele of a heterozygote and
- *   `(x + 4) / (2N + 4)` for a homozygote;
+ *   Forensic Science Regulator's FSR-GUI-0012 Issue 1, February 2026, section
+ *   11.3): the suspect's and the offender's alleles are added to the database
+ *   before the frequency is taken, `(x + 2) / (2N + 4)` for each allele of a
+ *   heterozygote and `(x + 4) / (2N + 4)` for a homozygote;
  * - a posterior quantile of the match probability (the highest-posterior-
  *   density method of Curran, Buckleton, Triggs & Weir 2002): each locus's
  *   allele frequencies get a Dirichlet posterior, `Dir(x_i + α)` with a
- *   uniform (`α = 1`) or `1/k` prior (Curran & Buckleton 2011), and the
+ *   uniform (`α = 1`), `1/k` (Curran & Buckleton 2011) or `1/(k + 2)`
+ *   prior (FSR-GUI-0012 section 11.4.2), and the
  *   random match probability's posterior is simulated. The upper `level`
  *   quantile is a one-sided bound on the RMP, its reciprocal a lower bound on
  *   the likelihood ratio.
  *
- * Both evaluate the NRC II 4.2 genotype frequency (the formula of
+ * A third, the Bayesian estimator of FSR-GUI-0012 section 11.4
+ * (`bayesianFrequency`, `bayesianRandomMatchProbability`), takes the
+ * posterior mean `(x + α) / (2N + Σα)` as a point estimate.
+ *
+ * All three evaluate the NRC II 4.2 genotype frequency (the formula of
  * `forensics.genotypeFrequency`) at the adjusted frequencies, so theta applies
- * as elsewhere in the deck. Neither
- * applies the 5/(2N) floor: the added alleles and the prior are the allowance
- * for rare alleles, and an unlisted allele counts as `x = 0`. Every locus needs
- * its sample size (`n > 0`).
+ * as elsewhere in the deck. None applies the 5/(2N) floor: the added alleles
+ * and the prior are the allowance for rare alleles, and an unlisted allele
+ * counts as `x = 0`. Every locus needs its sample size (`n > 0`).
  *
  * The simulation uses its own Park-Miller generator (the one `popstats.j`
  * uses), normal deviates by the polar method (Marsaglia & Bray 1964) and gamma
@@ -55,6 +59,7 @@ use math;
 use maps;
 use lists;
 use convert;
+use decimal;
 
 import "./forensicgenetics.j" as forensics;
 
@@ -64,10 +69,31 @@ import "./forensicgenetics.j" as forensics;
 export def const PRIOR_UNIFORM as int init 1;
 
 /**
- * Dirichlet prior `α = 1/k` on every allele, `k` the alleles at the locus
- * (listed, plus any of the profile's the table lacks).
+ * Dirichlet prior `α = 1/k` on every allele.
+ *
+ * In the posterior functions `k` is `k'`, the listed alleles plus any of the
+ * profile's the table lacks, so the prior is a proper Dirichlet over those
+ * `k'` categories with total mass 1 and the posterior mean is
+ * `(x + 1/k') / (2N + 1)`, `x` the count scaled as in `log10RmpQuantiles`.
+ * That equals FSR-GUI-0012 section 11.4.1
+ * (`k` = listed alleles) when every profile allele is listed, and section
+ * 11.4.2 (`1/(k + 2)`) when both alleles of a heterozygote are unlisted;
+ * with one unlisted allele it is neither. `bayesianFrequency` uses section
+ * 11.4.1's `k` (listed alleles) literally.
  */
 export def const PRIOR_ONE_OVER_K as int init 2;
+
+/**
+ * Dirichlet prior `α = 1/(k + 2)`, `k` the listed alleles: FSR-GUI-0012
+ * section 11.4.2, the prior that allows for unobserved alleles.
+ *
+ * The `k + 2` categories are the listed alleles and two unobserved slots;
+ * a profile allele the table lacks takes one of the slots, and slots left
+ * over join the other alleles' class. The prior mass is 1, so the posterior
+ * mean of every allele is `(x + 1/(k + 2)) / (2N + 1)`, `x` the count scaled
+ * as in `log10RmpQuantiles`.
+ */
+export def const PRIOR_ONE_OVER_K_PLUS_TWO as int init 3;
 
 /**
  * A simulation size for the posterior quantiles. The Monte Carlo error of a
@@ -136,14 +162,13 @@ def const RAND_MULTIPLIER as int init 48271;
 # rounding in the table, not unlisted alleles.
 def const REST_TOLERANCE as float init 0.000000001;
 
-# The generator's state, the deviate just drawn, and the polar method's
-# unused second normal. Every sampler takes one and returns the next, since
-# arguments are copies.
+# The generator's state, the polar method's unused second normal, and the
+# deviates the last `lnGammas` call drew.
 def struct Stream {
     state as int,
-    value as float,
     spare as float,
-    hasSpare as bool
+    hasSpare as bool,
+    values as list of float
 };
 
 # One locus of the simulation: its Dirichlet parameters, aggregated to the
@@ -165,6 +190,14 @@ func fail(msg as string) {
 func checkTheta(theta as float) {
     if ($theta < 0.0 or $theta >= 1.0) {
         fail("theta must be in [0, 1)");
+    }
+}
+
+func checkPrior(prior as int) {
+    if ($prior != PRIOR_UNIFORM and $prior != PRIOR_ONE_OVER_K and
+        $prior != PRIOR_ONE_OVER_K_PLUS_TWO) {
+        fail("prior must be PRIOR_UNIFORM, PRIOR_ONE_OVER_K or PRIOR_ONE_OVER_K_PLUS_TWO, " +
+            "got {$prior}");
     }
 }
 
@@ -316,15 +349,163 @@ export func log10SizeBiasRandomMatchProbability(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the corrected likelihood ratio
  * @throws {Error} kind "reporting" as `sizeBiasRandomMatchProbability`, or if
- *   the product underflows to zero
+ *   the ratio exceeds 1e300 (the RMP is below 1e-300, subnormal or zero: use
+ *   `log10SizeBiasRandomMatchProbability` then)
  */
 export func sizeBiasLikelihoodRatio(
     fdb as forensics.FrequencyDb,
     p as forensics.Profile,
     theta as float) {
     def rmp as float init sizeBiasRandomMatchProbability($fdb, $p, $theta);
-    if ($rmp <= 0.0) {
-        fail("profile '" + $p.id + "' has a zero random match probability");
+    # Below 1e-300 the RMP may be subnormal and 1 / rmp past float range; the
+    # cut matches likelihoodRatioLowerBound's 1e300.
+    if ($rmp < 1e-300) {
+        fail("profile '" + $p.id + "' has a random match probability below 1e-300, its " +
+            "ratio is past float range; use log10SizeBiasRandomMatchProbability");
+    }
+    return 1.0 / $rmp;
+}
+
+# --- Bayesian point estimate -----------------------------------------------
+
+/**
+ * One allele's Bayesian frequency estimate (FSR-GUI-0012 Issue 1, section
+ * 11.4): the posterior mean under a Dirichlet prior, with `x = p · 2N` (0 if
+ * unlisted) and `k` the alleles the table lists.
+ *
+ * - `PRIOR_UNIFORM`: `(x + 1) / (2N + k)`
+ * - `PRIOR_ONE_OVER_K`: `(x + 1/k) / (2N + 1)` (section 11.4.1)
+ * - `PRIOR_ONE_OVER_K_PLUS_TWO`: `(x + 1/(k + 2)) / (2N + 1)` (section 11.4.2)
+ *
+ * `k` is section 11.4's, the listed alleles only, also for an unlisted
+ * allele; under `PRIOR_ONE_OVER_K` the posterior functions also count the
+ * profile's unlisted alleles. `x` is not scaled for a table summing above 1
+ * (the posterior functions scale it to `2N`). No 5/(2N) floor.
+ * @param fdb {forensics.FrequencyDb} the reference frequencies
+ * @param locus {string} the locus
+ * @param allele {string} the allele to estimate
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
+ * @return {float} the estimated frequency
+ * @throws {Error} kind "reporting" on an unknown prior, a locus the database
+ *   lacks, one with `n == 0` or one listing no allele
+ */
+export func bayesianFrequency(
+    fdb as forensics.FrequencyDb,
+    locus as string,
+    allele as string,
+    prior as int) {
+    checkPrior($prior);
+    return posteriorMean(locusCounts($fdb, $locus), $allele, $prior);
+}
+
+# posteriorMean is bayesianFrequency on a fetched locus.
+func posteriorMean(lf as forensics.LocusFrequencies, allele as string, prior as int) {
+    def k as float init convert.toFloat(len($lf.alleles));
+    if ($k == 0.0) {
+        fail("locus '" + $lf.locus + "' lists no allele; the prior needs k > 0");
+    }
+    def twoN as float init 2.0 * convert.toFloat($lf.n);
+    def x as float init count($lf, $allele);
+    if ($prior == PRIOR_UNIFORM) {
+        return ($x + 1.0) / ($twoN + $k);
+    }
+    if ($prior == PRIOR_ONE_OVER_K) {
+        return ($x + 1.0 / $k) / ($twoN + 1.0);
+    }
+    return ($x + 1.0 / ($k + 2.0)) / ($twoN + 1.0);
+}
+
+# bayesianGenotype is NRC II 4.2 at bayesianFrequency estimates.
+func bayesianGenotype(
+    fdb as forensics.FrequencyDb,
+    g as forensics.Genotype,
+    theta as float,
+    prior as int) {
+    def lf as forensics.LocusFrequencies init locusCounts($fdb, $g.locus);
+    def pa as float init posteriorMean($lf, $g.a, $prior);
+    def homozygous as bool init forensics.isHomozygous($g);
+    def pb as float init $pa;
+    if (not $homozygous) {
+        $pb = posteriorMean($lf, $g.b, $prior);
+    }
+    return nrcGenotype($pa, $pb, $homozygous, $theta);
+}
+
+/**
+ * The random match probability at Bayesian frequency estimates: the product
+ * over the profile's loci of NRC II 4.2 at `bayesianFrequency` values.
+ * @param fdb {forensics.FrequencyDb} the reference frequencies
+ * @param p {forensics.Profile} the matching profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
+ * @return {float} the estimated random match probability
+ * @throws {Error} kind "reporting" on an empty profile, an out-of-range theta
+ *   or prior, or as `bayesianFrequency`
+ */
+export func bayesianRandomMatchProbability(
+    fdb as forensics.FrequencyDb,
+    p as forensics.Profile,
+    theta as float,
+    prior as int) {
+    checkProfile($p);
+    checkTheta($theta);
+    checkPrior($prior);
+    def out as float init 1.0;
+    for (def locus in $p.loci) {
+        $out = $out * bayesianGenotype($fdb, $p.loci[$locus], $theta, $prior);
+    }
+    return $out;
+}
+
+/**
+ * The base-10 logarithm of `bayesianRandomMatchProbability`, summed per locus
+ * so a long profile does not underflow.
+ * @param fdb {forensics.FrequencyDb} the reference frequencies
+ * @param p {forensics.Profile} the matching profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
+ * @return {float} log10 of the estimated random match probability
+ * @throws {Error} kind "reporting" as `bayesianRandomMatchProbability`
+ */
+export func log10BayesianRandomMatchProbability(
+    fdb as forensics.FrequencyDb,
+    p as forensics.Profile,
+    theta as float,
+    prior as int) {
+    checkProfile($p);
+    checkTheta($theta);
+    checkPrior($prior);
+    def out as float init 0.0;
+    for (def locus in $p.loci) {
+        $out = $out + math.log10(bayesianGenotype($fdb, $p.loci[$locus], $theta, $prior));
+    }
+    return $out;
+}
+
+/**
+ * The single-source likelihood ratio at Bayesian frequency estimates,
+ * `1 / bayesianRandomMatchProbability`.
+ * @param fdb {forensics.FrequencyDb} the reference frequencies
+ * @param p {forensics.Profile} the matching profile
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
+ * @return {float} the likelihood ratio
+ * @throws {Error} kind "reporting" as `bayesianRandomMatchProbability`, or if
+ *   the ratio exceeds 1e300 (use `log10BayesianRandomMatchProbability` then)
+ */
+export func bayesianLikelihoodRatio(
+    fdb as forensics.FrequencyDb,
+    p as forensics.Profile,
+    theta as float,
+    prior as int) {
+    def rmp as float init bayesianRandomMatchProbability($fdb, $p, $theta, $prior);
+    if ($rmp < 1e-300) {
+        fail("profile '" + $p.id + "' has a random match probability below 1e-300, its " +
+            "ratio is past float range; use log10BayesianRandomMatchProbability");
     }
     return 1.0 / $rmp;
 }
@@ -333,89 +514,84 @@ export func sizeBiasLikelihoodRatio(
 
 # stream starts a generator at a seed in [1, 2^31 - 2].
 func stream(seed as int) {
-    return Stream{state: $seed, value: 0.0, spare: 0.0, hasSpare: false};
+    return Stream{state: $seed, spare: 0.0, hasSpare: false, values: []};
 }
 
-# nextUniform is one Park-Miller step; the value state / (2^31 - 1) lies in
-# (0, 1), never 0 or 1, so its logarithm is always finite.
-func nextUniform(s as Stream) {
-    def st as Stream init $s;
-    $st.state = ($s.state * RAND_MULTIPLIER) % RAND_MODULUS;
-    $st.value = convert.toFloat($st.state) / 2147483647.0;
-    return $st;
+# nextState is one Park-Miller step. state / (2^31 - 1) lies in (0, 1), never
+# 0 or 1, so its logarithm is always finite.
+func nextState(state as int) {
+    return ($state * RAND_MULTIPLIER) % RAND_MODULUS;
 }
 
-# nextNormal is a standard normal deviate by the polar method (Marsaglia &
-# Bray 1964): (v1, v2) uniform in the unit disc, s = v1^2 + v2^2, then
-# v1 m and v2 m with m = sqrt(-2 ln s / s), two independent deviates. The
-# second is kept for the next call.
-func nextNormal(s as Stream) {
-    def st as Stream init $s;
-    if ($st.hasSpare) {
-        $st.hasSpare = false;
-        $st.value = $st.spare;
-        return $st;
-    }
-    while (true) {
-        $st = nextUniform($st);
-        def v1 as float init 2.0 * $st.value - 1.0;
-        $st = nextUniform($st);
-        def v2 as float init 2.0 * $st.value - 1.0;
-        def r as float init $v1 * $v1 + $v2 * $v2;
-        if ($r < 1.0 and $r > 0.0) {
-            def m as float init math.sqrt(-2.0 * math.ln($r) / $r);
-            $st.value = $v1 * $m;
-            $st.spare = $v2 * $m;
-            $st.hasSpare = true;
-            return $st;
+# lnGammas draws ln X_j for X_j ~ Gamma(alphas[j], 1), in order, into the
+# returned Stream's `values`. One call per simulation draw: the generator
+# state lives in locals, since a Stream copied per deviate dominated the run
+# (300k struct copies per 1000 draws).
+#
+# Gamma (Marsaglia & Tsang 2000), alpha >= 1: d = alpha - 1/3,
+# c = 1/sqrt(9d); x normal, v = (1 + c x)^3 > 0, u uniform; accept d v if
+# u < 1 - 0.0331 x^4 (the squeeze) or ln u < x^2/2 + d (1 - v + ln v). For
+# alpha < 1, X = Gamma(alpha + 1) * U^(1/alpha), kept in logarithms because
+# U^(1/alpha) underflows for small alpha.
+#
+# Normal (polar method, Marsaglia & Bray 1964): (v1, v2) uniform in the unit
+# disc, r = v1^2 + v2^2, then v1 m and v2 m with m = sqrt(-2 ln r / r); the
+# second deviate is kept for the next normal.
+func lnGammas(s as Stream, alphas as list of float) {
+    def state as int init $s.state;
+    def spare as float init $s.spare;
+    def hasSpare as bool init $s.hasSpare;
+    def out as list of float init [];
+    for (def j in 0..len($alphas)) {
+        def shift as float init 0.0;
+        def a as float init $alphas[$j];
+        if ($a < 1.0) {
+            $state = nextState($state);
+            $shift = math.ln(convert.toFloat($state) / 2147483647.0) / $a;
+            $a = $a + 1.0;
         }
-    }
-    return $st;
-}
-
-# nextLnGamma draws ln X for X ~ Gamma(alpha, 1) (Marsaglia & Tsang 2000). For
-# alpha >= 1: d = alpha - 1/3, c = 1/sqrt(9d); x normal, v = (1 + c x)^3 > 0,
-# u uniform; accept d v if u < 1 - 0.0331 x^4 (the squeeze) or
-# ln u < x^2/2 + d (1 - v + ln v). For alpha < 1, X = Gamma(alpha + 1) *
-# U^(1/alpha). The logarithm is returned because U^(1/alpha) underflows for
-# small alpha.
-func nextLnGamma(s as Stream, alpha as float) {
-    def st as Stream init $s;
-    def shift as float init 0.0;
-    def a as float init $alpha;
-    if ($a < 1.0) {
-        $st = nextUniform($st);
-        $shift = math.ln($st.value) / $a;
-        $a = $a + 1.0;
-    }
-    def d as float init $a - 1.0 / 3.0;
-    def c as float init 1.0 / math.sqrt(9.0 * $d);
-    while (true) {
-        $st = nextNormal($st);
-        def x as float init $st.value;
-        def v as float init 1.0 + $c * $x;
-        if ($v > 0.0) {
-            $v = $v * $v * $v;
-            $st = nextUniform($st);
-            def u as float init $st.value;
-            def x2 as float init $x * $x;
-            if ($u < 1.0 - 0.0331 * $x2 * $x2 or
-                math.ln($u) < 0.5 * $x2 + $d * (1.0 - $v + math.ln($v))) {
-                $st.value = math.ln($d * $v) + $shift;
-                return $st;
+        def d as float init $a - 1.0 / 3.0;
+        def c as float init 1.0 / math.sqrt(9.0 * $d);
+        def accepted as bool init false;
+        while (not $accepted) {
+            def x as float init $spare;
+            if ($hasSpare) {
+                $hasSpare = false;
+            } else {
+                def found as bool init false;
+                while (not $found) {
+                    $state = nextState($state);
+                    def v1 as float init 2.0 * (convert.toFloat($state) / 2147483647.0) - 1.0;
+                    $state = nextState($state);
+                    def v2 as float init 2.0 * (convert.toFloat($state) / 2147483647.0) - 1.0;
+                    def r as float init $v1 * $v1 + $v2 * $v2;
+                    if ($r < 1.0 and $r > 0.0) {
+                        def m as float init math.sqrt(-2.0 * math.ln($r) / $r);
+                        $x = $v1 * $m;
+                        $spare = $v2 * $m;
+                        $hasSpare = true;
+                        $found = true;
+                    }
+                }
+            }
+            def v as float init 1.0 + $c * $x;
+            if ($v > 0.0) {
+                $v = $v * $v * $v;
+                $state = nextState($state);
+                def u as float init convert.toFloat($state) / 2147483647.0;
+                def x2 as float init $x * $x;
+                if ($u < 1.0 - 0.0331 * $x2 * $x2 or
+                    math.ln($u) < 0.5 * $x2 + $d * (1.0 - $v + math.ln($v))) {
+                    $out[] = math.ln($d * $v) + $shift;
+                    $accepted = true;
+                }
             }
         }
     }
-    return $st;
+    return Stream{state: $state, spare: $spare, hasSpare: $hasSpare, values: $out};
 }
 
 # --- posterior quantiles ----------------------------------------------------
-
-func checkPrior(prior as int) {
-    if ($prior != PRIOR_UNIFORM and $prior != PRIOR_ONE_OVER_K) {
-        fail("prior must be PRIOR_UNIFORM or PRIOR_ONE_OVER_K, got {$prior}");
-    }
-}
 
 func checkSimulation(draws as int, seed as int) {
     if ($draws < 1 or $draws > MAX_DRAWS) {
@@ -429,7 +605,11 @@ func checkSimulation(draws as int, seed as int) {
 # locusPrior builds one locus's aggregated Dirichlet posterior: the profile's
 # allele(s) with x + alpha each, and every other allele in one class with
 # their counts and priors summed, plus the count the listed frequencies leave
-# short of 2N (unlisted alleles, no prior).
+# short of 2N (unlisted alleles, no prior), or with the counts scaled to 2N
+# when the listed frequencies sum above 1. The k categories are the listed
+# alleles plus the profile's unlisted ones, or for PRIOR_ONE_OVER_K_PLUS_TWO
+# the listed alleles plus two unobserved slots (an unlisted profile allele
+# fills a slot, so k does not grow).
 func locusPrior(fdb as forensics.FrequencyDb, g as forensics.Genotype, prior as int) {
     def lf as forensics.LocusFrequencies init locusCounts($fdb, $g.locus);
     def homozygous as bool init forensics.isHomozygous($g);
@@ -439,14 +619,18 @@ func locusPrior(fdb as forensics.FrequencyDb, g as forensics.Genotype, prior as 
     for (def a in $lf.alleles) {
         $listed = $listed + $lf.alleles[$a] * $twoN;
     }
-    if (not maps.has($lf.alleles, $g.a)) {
-        $k = $k + 1;
-    }
-    if (not $homozygous and not maps.has($lf.alleles, $g.b)) {
-        $k = $k + 1;
+    if ($prior == PRIOR_ONE_OVER_K_PLUS_TWO) {
+        $k = $k + 2;
+    } else {
+        if (not maps.has($lf.alleles, $g.a)) {
+            $k = $k + 1;
+        }
+        if (not $homozygous and not maps.has($lf.alleles, $g.b)) {
+            $k = $k + 1;
+        }
     }
     def w as float init 1.0;
-    if ($prior == PRIOR_ONE_OVER_K) {
+    if ($prior != PRIOR_UNIFORM) {
         $w = 1.0 / convert.toFloat($k);
     }
     def own as int init 2;
@@ -456,6 +640,15 @@ func locusPrior(fdb as forensics.FrequencyDb, g as forensics.Genotype, prior as 
         $own = 1;
     } else {
         $xb = count($lf, $g.b);
+    }
+    # A table summing above 1 (withLocus allows 1.05) lists more than 2N
+    # copies; scale the counts down to 2N so the posterior mass is 2N plus the
+    # prior's, as the docblocks state.
+    if ($listed > $twoN) {
+        def scale as float init $twoN / $listed;
+        $xa = $xa * $scale;
+        $xb = $xb * $scale;
+        $listed = $twoN;
     }
     def rest as float init $listed - $xa - $xb + convert.toFloat($k - $own) * $w;
     if ($twoN - $listed > REST_TOLERANCE * $twoN) {
@@ -491,42 +684,54 @@ func simulate(
     for (def locus in $p.loci) {
         $priors[] = locusPrior($fdb, $p.loci[$locus], $prior);
     }
+    # The draw's gamma parameters in sampling order: per locus alpha_A, then
+    # alpha_B (heterozygote), then alpha_rest (when positive).
+    def alphas as list of float init [];
+    for (def lp in $priors) {
+        $alphas[] = $lp.alphaA;
+        if (not $lp.homozygous) {
+            $alphas[] = $lp.alphaB;
+        }
+        if ($lp.alphaRest > 0.0) {
+            $alphas[] = $lp.alphaRest;
+        }
+    }
     def nl as int init len($priors);
     def ln10 as float init math.ln(10.0);
     def log2 as float init math.log10(2.0);
     def st as Stream init stream($seed);
     def out as list of float init [];
     for (def d in 0..$draws) {
+        $st = lnGammas($st, $alphas);
+        def pos as int init 0;
         def total as float init 0.0;
         for (def i in 0..$nl) {
-            $st = nextLnGamma($st, $priors[$i].alphaA);
-            def la as float init $st.value;
+            def homozygous as bool init $priors[$i].homozygous;
+            def la as float init $st.values[$pos];
+            $pos = $pos + 1;
             def lb as float init $la;
-            if (not $priors[$i].homozygous) {
-                $st = nextLnGamma($st, $priors[$i].alphaB);
-                $lb = $st.value;
-            }
             def m as float init $la;
+            if (not $homozygous) {
+                $lb = $st.values[$pos];
+                $pos = $pos + 1;
+                $m = math.max($m, $lb);
+            }
             def lr as float init 0.0;
             def hasRest as bool init $priors[$i].alphaRest > 0.0;
             if ($hasRest) {
-                $st = nextLnGamma($st, $priors[$i].alphaRest);
-                $lr = $st.value;
+                $lr = $st.values[$pos];
+                $pos = $pos + 1;
                 $m = math.max($m, $lr);
             }
-            if (not $priors[$i].homozygous) {
-                $m = math.max($m, $lb);
-            }
             def sum as float init math.exp($la - $m);
-            if (not $priors[$i].homozygous) {
+            if (not $homozygous) {
                 $sum = $sum + math.exp($lb - $m);
             }
             if ($hasRest) {
                 $sum = $sum + math.exp($lr - $m);
             }
             def ls as float init $m + math.ln($sum);
-            $total = $total +
-                locusLog10($la - $ls, $lb - $ls, $priors[$i].homozygous, $theta, $ln10, $log2);
+            $total = $total + locusLog10($la - $ls, $lb - $ls, $homozygous, $theta, $ln10, $log2);
         }
         $out[] = $total;
     }
@@ -553,10 +758,12 @@ func locusLog10(
 }
 
 # quantileOf is the nearest-rank quantile of sorted values: the ceil(q M)-th
-# smallest of M.
+# smallest of M. q M is taken in decimal, q at its shortest decimal form, so
+# 0.07 * 100 is exactly 7 (in float it is 7.000000000000001, rank 8).
 func quantileOf(sorted as list of float, q as float) {
     def m as int init len($sorted);
-    def rank as int init math.ceil($q * convert.toFloat($m));
+    def rank as int init decimal.toInt(
+        decimal.round(decimal.mul(decimal.from($q), $m), 0, "ceiling"));
     if ($rank < 1) {
         $rank = 1;
     }
@@ -573,14 +780,18 @@ func quantileOf(sorted as list of float, q as float) {
  *
  * Locus by locus the frequencies are `Dir(x_i + α)`, `x_i = p_i · 2N`, with
  * `α` from `prior`; the count `2N - Σ x_i` a partial table leaves is one more
- * class with no prior. Loci are independent. Each draw evaluates NRC II 4.2 at
+ * class with no prior. A table summing above 1 has its counts scaled by
+ * `2N / Σ x_i`, so the data mass is `2N`; `bayesianFrequency` uses the
+ * unscaled `x` there. Loci are independent. Each draw evaluates NRC II 4.2 at
  * the drawn frequencies and multiplies over loci. The q-quantile is the
- * nearest-rank one, the `ceil(q · draws)`-th smallest draw.
+ * nearest-rank one, the `ceil(q · draws)`-th smallest draw, with `q · draws`
+ * computed exactly from `q`'s shortest decimal form (0.07 · 100 is rank 7).
  * @param fdb {forensics.FrequencyDb} the reference frequencies, `n > 0` at
  *   every profile locus
  * @param p {forensics.Profile} the matching profile
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
- * @param prior {int} `PRIOR_UNIFORM` or `PRIOR_ONE_OVER_K`
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
  * @param quantiles {list of float} the quantiles wanted, each in (0, 1)
  * @param draws {int} the simulation size, 1 to `MAX_DRAWS`
  * @param seed {int} the generator seed, 1 to 2147483646
@@ -621,7 +832,8 @@ export func log10RmpQuantiles(
  * @param fdb {forensics.FrequencyDb} the reference frequencies
  * @param p {forensics.Profile} the matching profile
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
- * @param prior {int} `PRIOR_UNIFORM` or `PRIOR_ONE_OVER_K`
+ * @param prior {int} `PRIOR_UNIFORM`, `PRIOR_ONE_OVER_K` or
+ *   `PRIOR_ONE_OVER_K_PLUS_TWO`
  * @param level {float} the posterior probability, in (0, 1)
  * @param draws {int} the simulation size, 1 to `MAX_DRAWS`
  * @param seed {int} the generator seed, 1 to 2147483646

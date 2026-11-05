@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # Reporting a single-source match: the plug-in LR, the size-bias correction,
-# a 99% posterior lower bound for the database's sampling error, and the
-# ENFSI (2015) verbal equivalent of each.
+# the FSR-GUI-0012 Bayesian estimate, a 99% posterior lower bound (allowances
+# for the database's sampling error), and the ENFSI (2015) verbal equivalent
+# of each.
 #
 # Run from the deck root:  jennifer run examples/reporting.j
 #
@@ -35,6 +36,9 @@ func show(name as string, lr as float) {
 
 show("plug-in, 5/2N floor", forensics.matchLikelihoodRatio($db, $suspect, $theta));
 show("size-bias corrected", reporting.sizeBiasLikelihoodRatio($db, $suspect, $theta));
+show(
+    "Bayesian, 1/(k+2) prior",
+    reporting.bayesianLikelihoodRatio($db, $suspect, $theta, reporting.PRIOR_ONE_OVER_K_PLUS_TWO));
 show(
     "99% lower bound, 1/k prior",
     reporting.likelihoodRatioLowerBound(

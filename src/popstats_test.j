@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for popstats.j. Run with `jennifer test popstats_test.j`.
 #
@@ -121,6 +121,7 @@ func testPowerOfExclusionDuo() {
 }
 
 func testMonomorphicLocusHasNoPower() {
+    # He = PIC = 0 and trio = duo = 0: the docblocks' "at most" cases.
     def fdb as forensics.FrequencyDb init forensics.withLocus(
         forensics.db("mono"),
         "X",
@@ -200,6 +201,69 @@ func testCombinedLogDoesNotUnderflow() {
     near($all.log10MatchProbability, 400.0 * math.log10(0.1446));
     testing.assertTrue($all.matchProbability < 1e-300);
     near($all.powerOfDiscrimination, 1.0);
+}
+
+func testCombinedTpiOverflowThrowsPopstats() {
+    # 50^181 = 10^307.5 fits a float; 50^200 = 10^339.8 does not, and the
+    # product raised the interpreter's "runtime" overflow error.
+    def row as LocusStats init locusStats(fixture(), "L");
+    $row.typicalPaternityIndex = 50.0;
+    def table as list of LocusStats init [];
+    for (def i in 0..181) {
+        $table[] = $row;
+    }
+    def all as CombinedStats init combinedStats($table);
+    near($all.log10TypicalPaternityIndex, 181.0 * math.log10(50.0));
+    testing.assertThrows("tpiOverflow", "popstats");
+}
+
+func tpiOverflow() {
+    def row as LocusStats init locusStats(fixture(), "L");
+    $row.typicalPaternityIndex = 50.0;
+    def table as list of LocusStats init [];
+    for (def i in 0..200) {
+        $table[] = $row;
+    }
+    combinedStats($table);
+}
+
+# badRow is locus L's row with one field set out of range: its log10 term is
+# undefined (log10 0) or the row is not a probability.
+func badRow(field as string) {
+    def row as LocusStats init locusStats(fixture(), "L");
+    if ($field == "mp") {
+        $row.matchProbability = 0.0;
+    } elseif ($field == "trio") {
+        $row.powerOfExclusionTrio = 1.0;
+    } elseif ($field == "duo") {
+        $row.powerOfExclusionDuo = -0.1;
+    } else {
+        $row.typicalPaternityIndex = 0.0;
+    }
+    combinedStats([$row]);
+}
+
+func rowMpZero() {
+    badRow("mp");
+}
+
+func rowTrioOne() {
+    badRow("trio");
+}
+
+func rowDuoNegative() {
+    badRow("duo");
+}
+
+func rowTpiZero() {
+    badRow("tpi");
+}
+
+func testCombinedStatsRejectsBadRows() {
+    testing.assertThrows("rowMpZero", "popstats");
+    testing.assertThrows("rowTrioOne", "popstats");
+    testing.assertThrows("rowDuoNegative", "popstats");
+    testing.assertThrows("rowTpiZero", "popstats");
 }
 
 func testCombinedPower() {
@@ -307,6 +371,18 @@ func testHweExactMonomorphic() {
     near(hweExactTest([gl("M", "1", "1"), gl("M", "1", "1")]), 1.0);
 }
 
+func testHweExactBelowFloatRangeIsZero() {
+    # 2000 heterozygotes of 2000 people (A = B = 2000), H = 2000 the largest
+    # count: P = n! nA! nB! 2^H / ((2n)! H!) = 2^2000 / C(4000, 2000), and
+    # C(4000, 2000) > 2^4000 / (2 sqrt(2000)), so P < 2^-2000 * 90 < 1e-598.
+    # At most 1001 counts are no more likely, so p < 1e-595: 0.0 in float.
+    def g as list of forensics.Genotype init [];
+    for (def i in 0..2000) {
+        $g[] = gl("M", "1", "2");
+    }
+    testing.assertTrue(hweExactTest($g) == 0.0);
+}
+
 # leveneP sums, by the Levene formula through lgamma, every heterozygote count
 # no more likely than `het` for n people with `rare` copies of the minor
 # allele - a second route to the p-value that shares nothing with the
@@ -387,6 +463,38 @@ func testHwePermutationEstimatesTheExactTest() {
 func testHwePermutationIsReproducible() {
     near(hwePermutationTest(threeHoms(), 2000, 42), hwePermutationTest(threeHoms(), 2000, 42));
     near(hwePermutationTest([gl("M", "1", "1")], 10, 1), 1.0);
+}
+
+func testHwePermutationManyAllelesStaysSmall() {
+    # 1000 heterozygotes over 2000 distinct alleles. Every allele occurs once,
+    # so every re-pairing is again 1000 distinct heterozygotes, as probable as
+    # the observed table: r = B and p = 1 exactly. The dense k x k count table
+    # (4e6 cells) used to exhaust memory here.
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..1000) {
+        $gs[] = gl("W", "{2 * $i + 1000}", "{2 * $i + 1001}");
+    }
+    near(hwePermutationTest($gs, 20, 3), 1.0);
+}
+
+func testHweHashedTableMatchesDense() {
+    # Both tables count the same draws, so the p-values are equal; a dense
+    # limit of 0 forces the hashed table, here at 2n = 6 or 14 slots, so
+    # slots collide and probe.
+    def three as Sample init encode(threeHoms());
+    near(hweRun($three, 3000, 12345, 0), hwePermutationTest(threeHoms(), 3000, 12345));
+    def mixed as list of forensics.Genotype init [
+        gl("T", "a", "b"),
+        gl("T", "a", "a"),
+        gl("T", "c", "d"),
+        gl("T", "b", "d"),
+        gl("T", "c", "c"),
+        gl("T", "a", "e"),
+        gl("T", "e", "e")
+    ];
+    near(hweRun(encode($mixed), 3000, 77, 0), hwePermutationTest($mixed, 3000, 77));
+    # and the hashed run still estimates the exact 1/15 (tolerance 4 SE)
+    within(hweRun($three, 10000, 4242, 0), 1.0 / 15.0, 0.01);
 }
 
 func testGeneratorIsParkMiller() {
@@ -845,6 +953,44 @@ func testLdMonomorphicAndReproducible() {
     near(ldPermutationTest($u[0], $u[1], 1000, 8), ldPermutationTest($u[0], $u[1], 1000, 8));
 }
 
+func testLdManyGenotypesStaysSmall() {
+    # 1000 people with a distinct homozygote at each locus: every re-pairing
+    # is again a table of 1000 single counts, as probable as the observed one,
+    # so p = 1 exactly. The dense 1000 x 1000 count table used 1.7 GB.
+    def a as list of forensics.Genotype init [];
+    def b as list of forensics.Genotype init [];
+    for (def i in 0..1000) {
+        $a[] = gl("L1", "{$i}", "{$i}");
+        $b[] = gl("L2", "{$i}", "{$i}");
+    }
+    near(ldPermutationTest($a, $b, 20, 3), 1.0);
+}
+
+func testLdHashedTableMatchesDense() {
+    # Same draws, same counts: the hashed table (dense limit 0, 16 slots for
+    # seven people) gives the dense run's hits and end state, and estimates
+    # the exact enumeration.
+    def t as list of list of forensics.Genotype init locusPair(
+        [
+            "1/1",
+            "1/1",
+            "1/2",
+            "1/2",
+            "2/2",
+            "2/2",
+            "1/2"
+        ],
+        ["7/7", "7/7", "7/8", "7/8", "8/8", "7/8", "8/8"]);
+    def rows as list of int init genotypeClasses(encode($t[0]));
+    def cols as list of int init genotypeClasses(encode($t[1]));
+    def dense as LdRun init ldRun($rows, $cols, 3, 3, 20000, 31337, DENSE_CELLS);
+    def hashed as LdRun init ldRun($rows, $cols, 3, 3, 20000, 31337, 0);
+    testing.assertEqual($hashed.hits, $dense.hits);
+    testing.assertEqual($hashed.state, $dense.state);
+    # SE at most sqrt(.25 / 20000) = .0035
+    within(convert.toFloat($hashed.hits + 1) / 20001.0, exactLd($t[0], $t[1]), 0.015);
+}
+
 # Five profiles at three loci; Z is untyped in the last. Pairs in name order:
 # (X, Y) over 5 people, (X, Z) and (Y, Z) over 4. The first pair starts from
 # the seed, so it equals ldPermutationTest with that seed; the others follow
@@ -857,6 +1003,71 @@ func ldProfiles() {
         forensics.profile("4", [gl("Y", "4", "4"), gl("X", "2", "2"), gl("Z", "6", "6")]),
         forensics.profile("5", [gl("Y", "3", "4"), gl("X", "1", "2")])
     ];
+}
+
+# chainedPairs is ldPermutationTests rebuilt from ldPair: per pair (name
+# order) the genotypes of profiles typed at both, encoded afresh, on one
+# generator stream.
+func chainedPairs(
+    profiles as list of forensics.Profile,
+    names as list of string,
+    permutations as int,
+    seed as int) {
+    def out as list of float init [];
+    def state as int init $seed;
+    for (def x in 0..len($names)) {
+        for (def y in ($x + 1)..len($names)) {
+            def a as list of forensics.Genotype init [];
+            def b as list of forensics.Genotype init [];
+            for (def p in $profiles) {
+                if (maps.has($p.loci, $names[$x]) and maps.has($p.loci, $names[$y])) {
+                    $a[] = $p.loci[$names[$x]];
+                    $b[] = $p.loci[$names[$y]];
+                }
+            }
+            def pv as float init 1.0;
+            if (len($a) >= 2) {
+                def run as LdRun init ldPair($a, $b, $permutations, $state);
+                $state = $run.state;
+                $pv = convert.toFloat($run.hits + 1) / convert.toFloat($permutations + 1);
+            }
+            $out[] = $pv;
+        }
+    }
+    return $out;
+}
+
+func testLdPairsMatchPerPairEncoding() {
+    # Loci are classified once over all profiles and renumbered per pair. At
+    # (X, Z) the subset drops profiles 2 and 6, so X's classes in first-seen
+    # order become 1/1, 2/2, 1/2 instead of 1/1, 1/2, 2/2; (W, X) is typed in
+    # profiles 1 and 4 only, both 9/9 and 1/1, so no draw is taken. Every
+    # p-value must equal the per-pair encoding's, bit for bit.
+    def ps as list of forensics.Profile init [
+        forensics.profile(
+            "1",
+            [gl("W", "9", "9"), gl("X", "1", "1"), gl("Y", "3", "3"), gl("Z", "5", "5")]),
+        forensics.profile("2", [gl("X", "1", "2"), gl("Y", "3", "4")]),
+        forensics.profile("3", [gl("X", "2", "2"), gl("Z", "6", "6")]),
+        forensics.profile(
+            "4",
+            [gl("W", "9", "9"), gl("X", "1", "1"), gl("Y", "4", "4"), gl("Z", "5", "6")]),
+        forensics.profile("5", [gl("X", "2", "2"), gl("Y", "3", "3"), gl("Z", "6", "6")]),
+        forensics.profile("6", [gl("Y", "4", "4"), gl("Z", "5", "5")]),
+        forensics.profile("7", [gl("X", "1", "2"), gl("Y", "3", "4"), gl("Z", "5", "5")]),
+        forensics.profile("8", [gl("X", "1", "1"), gl("Y", "3", "3"), gl("Z", "7", "7")])
+    ];
+    def r as list of LdTest init ldPermutationTests($ps, 2000, 977);
+    def want as list of float init chainedPairs($ps, ["W", "X", "Y", "Z"], 2000, 977);
+    testing.assertEqual(len($r), 6);
+    for (def i in 0..6) {
+        testing.assertTrue($r[$i].pValue == $want[$i]);
+    }
+    # (W, X) n = 2, monomorphic at both: p = 1
+    testing.assertEqual($r[0].n, 2);
+    near($r[0].pValue, 1.0);
+    # pairs WX WY WZ XY XZ YZ; (X, Z): profiles 1, 3, 4, 5, 7, 8
+    testing.assertEqual($r[4].n, 6);
 }
 
 func testLdPairwise() {

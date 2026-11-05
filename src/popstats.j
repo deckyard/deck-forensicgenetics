@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Population statistics for a reference table: the forensic-efficiency
@@ -87,6 +87,18 @@ def const RAND_MULTIPLIER as int init 48271;
 # sum, so a table exactly as likely as the observed one is not lost to
 # rounding.
 def const TIE_TOLERANCE as float init 0.0000001;
+
+# Multipliers of the permutation tests' cell hash, h = (x HASH_X + y HASH_Y)
+# mod table size. Both are odd, so x -> x HASH_X is a bijection modulo a power
+# of two; both are below 2^32 and x, y are list indices below 2^31, so the sum
+# stays below 2^63.
+def const HASH_X as int init 2654435761;
+def const HASH_Y as int init 2246822519;
+
+# Count tables with at most this many cells are indexed directly; larger ones
+# are hashed (see tableSlots). 65536 cells is 256 alleles in the HWE test, 256 x 256
+# genotype classes in the LD test.
+def const DENSE_CELLS as int init 65536;
 
 /**
  * The forensic-efficiency parameters of one locus, from its allele
@@ -308,7 +320,8 @@ export func powerOfDiscrimination(fdb as forensics.FrequencyDb, locus as string)
  * `1 - Σ p_i² - Σ_{i<j} 2 p_i² p_j²`.
  *
  * The chance that an offspring's allele reveals which of a heterozygous
- * parent's alleles it received; always below `expectedHeterozygosity`.
+ * parent's alleles it received; below `expectedHeterozygosity` except at a
+ * monomorphic locus (both 0).
  * @param fdb {forensics.FrequencyDb} the frequency table
  * @param locus {string} the locus name
  * @return {float} the PIC, in [0, 1)
@@ -364,7 +377,7 @@ export func powerOfExclusionTrio(fdb as forensics.FrequencyDb, locus as string) 
  * ```
  *
  * A man is excluded only when he shares no allele with the child, so this is
- * always below the trio value.
+ * at most the trio value (both 0 at a monomorphic locus).
  * @param fdb {forensics.FrequencyDb} the frequency table
  * @param locus {string} the locus name
  * @return {float} the duo power of exclusion
@@ -425,6 +438,31 @@ export func statsTable(fdb as forensics.FrequencyDb) {
 
 # --- combining loci ---------------------------------------------------------
 
+# FLOAT_MAX is the largest finite float. The interpreter raises a runtime error
+# on a product past it, so the TPI product checks first.
+def const FLOAT_MAX as float init 1.7976931348623157e308;
+
+# checkRow refuses a LocusStats row whose logarithms are undefined: MP outside
+# (0, 1], a PE outside [0, 1), a TPI not above 0. statsTable never builds one.
+func checkRow(row as LocusStats) {
+    if ($row.matchProbability <= 0.0 or $row.matchProbability > 1.0) {
+        fail("locus '" + $row.locus + "': matchProbability must be in (0, 1], got " +
+            "{$row.matchProbability}");
+    }
+    if ($row.powerOfExclusionTrio < 0.0 or $row.powerOfExclusionTrio >= 1.0) {
+        fail("locus '" + $row.locus + "': powerOfExclusionTrio must be in [0, 1), got " +
+            "{$row.powerOfExclusionTrio}");
+    }
+    if ($row.powerOfExclusionDuo < 0.0 or $row.powerOfExclusionDuo >= 1.0) {
+        fail("locus '" + $row.locus + "': powerOfExclusionDuo must be in [0, 1), got " +
+            "{$row.powerOfExclusionDuo}");
+    }
+    if ($row.typicalPaternityIndex <= 0.0) {
+        fail("locus '" + $row.locus + "': typicalPaternityIndex must be above 0, got " +
+            "{$row.typicalPaternityIndex}");
+    }
+}
+
 # checkUnit refuses a per-locus probability outside [0, 1].
 func checkUnit(x as float) {
     if ($x < 0.0 or $x > 1.0) {
@@ -438,7 +476,10 @@ func checkUnit(x as float) {
  * a sum of log10 terms.
  * @param table {list of LocusStats} the loci to combine, e.g. from `statsTable`
  * @return {CombinedStats} the combined values
- * @throws {Error} kind "popstats" on an empty table
+ * @throws {Error} kind "popstats" on an empty table, a row with
+ *   `matchProbability` outside (0, 1], a power of exclusion outside [0, 1) or
+ *   `typicalPaternityIndex` not above 0, or when `Π TPI` passes the float
+ *   maximum (about 1.8e308; sum `log10` of the rows' TPI then)
  */
 export func combinedStats(table as list of LocusStats) {
     if (len($table) == 0) {
@@ -458,8 +499,10 @@ export func combinedStats(table as list of LocusStats) {
     };
     def keepTrio as float init 1.0;
     def keepDuo as float init 1.0;
-    for (def i in 0..len($table)) {
+    def nl as int init len($table);
+    for (def i in 0..$nl) {
         def row as LocusStats init $table[$i];
+        checkRow($row);
         $out.matchProbability = $out.matchProbability * $row.matchProbability;
         $out.log10MatchProbability = $out.log10MatchProbability + math.log10($row.matchProbability);
         $keepTrio = $keepTrio * (1.0 - $row.powerOfExclusionTrio);
@@ -468,6 +511,11 @@ export func combinedStats(table as list of LocusStats) {
         $keepDuo = $keepDuo * (1.0 - $row.powerOfExclusionDuo);
         $out.log10NonExclusionDuo = $out.log10NonExclusionDuo +
             math.log10(1.0 - $row.powerOfExclusionDuo);
+        if ($out.typicalPaternityIndex > 1.0 and
+            $row.typicalPaternityIndex > FLOAT_MAX / $out.typicalPaternityIndex) {
+            fail("the combined typical paternity index of {$nl} loci exceeds the " +
+                "float range (above 1.8e308); sum log10 of each row's typicalPaternityIndex");
+        }
         $out.typicalPaternityIndex = $out.typicalPaternityIndex * $row.typicalPaternityIndex;
         $out.log10TypicalPaternityIndex = $out.log10TypicalPaternityIndex +
             math.log10($row.typicalPaternityIndex);
@@ -716,9 +764,13 @@ export func observedPowerOfExclusion(genotypes as list of forensics.Genotype) {
  * evaluate it by a recurrence from its mode. The p-value sums the
  * probabilities of every heterozygote count no more likely than the one
  * observed (ties within a relative 1e-7 count as equal). A monomorphic sample
- * returns 1.0. For three or more alleles use `hwePermutationTest`.
+ * returns 1.0. Probabilities are relative to the mode's, so an observed count
+ * more than about 1e308 times less likely than the mode gives 0.0: the
+ * p-value is below float range (2000 heterozygotes of 2000 people is about
+ * 1e-600). `hwePermutationTest` never returns 0. For three or more alleles
+ * use `hwePermutationTest`.
  * @param genotypes {list of forensics.Genotype} the sample, all at one locus
- * @return {float} the two-sided exact p-value, in (0, 1]
+ * @return {float} the two-sided exact p-value, in [0, 1]
  * @throws {Error} kind "popstats" as `observedHeterozygosity`, or if the
  *   sample shows more than two alleles
  */
@@ -748,7 +800,9 @@ export func hweExactTest(genotypes as list of forensics.Genotype) {
 # recurrences
 #   P(h - 2) = P(h) h (h - 1) / (4 (homr + 1) (homc + 1))
 #   P(h + 2) = P(h) 4 homr homc / ((h + 2) (h + 1))
-# then normalised. Every term is at most the mode's, so nothing overflows.
+# then normalised. Every term is at most the mode's, so nothing overflows; a
+# term below float range relative to the mode is 0, and an observed count
+# there gives p = 0 (limit 0, nothing summed).
 func wiggintonP(het as int, homr as int, homc as int) {
     def rare as int init 2 * $homr + $het;
     def n as int init $het + $homr + $homc;
@@ -822,7 +876,8 @@ func tableScore(s as Sample) {
  * The shuffle (Fisher-Yates) draws from a Park-Miller generator seeded with
  * `seed`, so a given seed always gives the same answer and the caller's
  * `math.rand` state is untouched. On a biallelic sample it estimates
- * `hweExactTest`.
+ * `hweExactTest`. Cost is about 7 µs per person per permutation: 2000 people
+ * at `DEFAULT_PERMUTATIONS` take about 145 s.
  * @param genotypes {list of forensics.Genotype} the sample, all at one locus
  * @param permutations {int} shuffles to draw, 1 to `MAX_PERMUTATIONS`
  * @param seed {int} the generator seed, 1 to 2147483646
@@ -844,6 +899,13 @@ export func hwePermutationTest(
     if (len($s.labels) == 1) {
         return 1.0;
     }
+    return hweRun($s, $permutations, $seed, DENSE_CELLS);
+}
+
+# hweRun is hwePermutationTest on an encoded sample with two or more alleles.
+# Its count table is dense up to `denseCells` cells (DENSE_CELLS; the overlay
+# passes 0 to run the hashed table on small samples).
+func hweRun(s as Sample, permutations as int, seed as int, denseCells as int) {
     def observed as float init tableScore($s) + math.log1p(TIE_TOLERANCE);
     def n as int init len($s.first);
     def k as int init len($s.labels);
@@ -854,14 +916,12 @@ export func hwePermutationTest(
     }
     def lnCount as list of float init lnTable($n);
     def accept as list of int init acceptLimits(2 * $n);
-    # Genotype counts live in a flat k*k list; a cell is current only when its
-    # stamp is this draw's number, so no pass is spent resetting it.
-    def cells as list of int init [];
-    def stamp as list of int init [];
-    for (def i in 0..($k * $k)) {
-        $cells[] = 0;
-        $stamp[] = 0;
-    }
+    def sparse as bool init $k * $k > $denseCells;
+    def slots as int init tableSlots($k * $k, $n, $denseCells);
+    def mask as int init $slots - 1;
+    def keys as list of int init keyList($sparse, $slots);
+    def cells as list of int init zeros($slots);
+    def stamp as list of int init zeros($slots);
     def ln2 as float init math.ln(2.0);
     def state as int init $seed;
     def hits as int init 0;
@@ -890,19 +950,29 @@ export func hwePermutationTest(
             def y as int init $pool[$pick];
             $pool[$pick] = $pool[$j - 1];
             $pool[$j - 1] = $y;
-            def cell as int init $x * $k + $y;
             if ($x > $y) {
-                $cell = $y * $k + $x;
+                def t as int init $x;
+                $x = $y;
+                $y = $t;
             }
             if ($x != $y) {
                 $score = $score + $ln2;
             }
-            if ($stamp[$cell] != $draw) {
-                $stamp[$cell] = $draw;
-                $cells[$cell] = 0;
+            def slot as int init $x * $k + $y;
+            if ($sparse) {
+                def key as int init $slot;
+                $slot = ($x * HASH_X + $y * HASH_Y) & $mask;
+                while ($stamp[$slot] == $draw and $keys[$slot] != $key) {
+                    $slot = ($slot + 1) & $mask;
+                }
+                $keys[$slot] = $key;
             }
-            $cells[$cell] = $cells[$cell] + 1;
-            $score = $score - $lnCount[$cells[$cell]];
+            if ($stamp[$slot] != $draw) {
+                $stamp[$slot] = $draw;
+                $cells[$slot] = 0;
+            }
+            $cells[$slot] = $cells[$slot] + 1;
+            $score = $score - $lnCount[$cells[$slot]];
             $j = $j - 2;
         }
         if ($score <= $observed) {
@@ -910,6 +980,46 @@ export func hwePermutationTest(
         }
     }
     return convert.toFloat($hits + 1) / convert.toFloat($permutations + 1);
+}
+
+# A permutation test's count table for an r x c table of which a draw fills
+# at most n cells is three int lists: `cells`, `stamp`, and `keys` when
+# sparse. A cell is current only when its stamp is the draw's number, so no
+# pass is spent clearing it; an older stamp reads as empty. Dense (r c up to
+# DENSE_CELLS): one slot per cell, `keys` empty. Sparse: open addressing with
+# linear probing over a power of two at least 2n slots, so a draw leaves it at
+# most half full, and `keys` holds each slot's cell. A dense table took
+# gigabytes at r = c = 2000. The lists are built by the caller from
+# `tableSlots` and `zeros`: taking them out of a struct copied each one.
+
+# tableSlots is the slot count of a count table of `cells` cells, n filled per
+# draw: `cells` when at most `denseCells` (dense), else the hashed size.
+func tableSlots(cells as int, n as int, denseCells as int) {
+    if ($cells <= $denseCells) {
+        return $cells;
+    }
+    def size as int init 2;
+    while ($size < 2 * $n) {
+        $size = $size * 2;
+    }
+    return $size;
+}
+
+# keyList is a count table's `keys`: `slots` zeros when sparse, else empty.
+func keyList(sparse as bool, slots as int) {
+    if (not $sparse) {
+        return [];
+    }
+    return zeros($slots);
+}
+
+# zeros is a list of `size` zeros.
+func zeros(size as int) {
+    def out as list of int init [];
+    for (def i in 0..$size) {
+        $out[] = 0;
+    }
+    return $out;
 }
 
 # lnTable lists ln(c) for c in 0..n, with ln(0) unused and set to 0.
@@ -991,29 +1101,29 @@ def struct Tally {
     hets as list of int
 };
 
-# tally encodes every sample (one locus each, as `encode` checks), checks they
-# share the locus, and counts allele copies and heterozygotes per sample.
-func tally(samples as list of list of forensics.Genotype) {
-    if (len($samples) == 0) {
+# tally checks that encoded samples (one per population, from `encode`) share
+# a locus, and counts allele copies and heterozygotes per sample. It takes the
+# samples encoded, as a list of structs: a `list of list of Genotype`
+# parameter is copied on every call.
+func tally(encoded as list of Sample) {
+    if (len($encoded) == 0) {
         fail("F-statistics need at least one population sample");
     }
-    def encoded as list of Sample init [];
     def index as map of string to int init {};
-    for (def i in 0..len($samples)) {
-        def s as Sample init encode($samples[$i]);
-        if ($i > 0 and $s.locus != $encoded[0].locus) {
-            fail("population samples mix loci '" + $encoded[0].locus + "' and '" + $s.locus + "'");
+    for (def i in 0..len($encoded)) {
+        if ($encoded[$i].locus != $encoded[0].locus) {
+            fail("population samples mix loci '" + $encoded[0].locus + "' and '" +
+                $encoded[$i].locus + "'");
         }
-        for (def a in $s.labels) {
+        for (def a in $encoded[$i].labels) {
             if (not maps.has($index, $a)) {
                 $index[$a] = len($index);
             }
         }
-        $encoded[] = $s;
     }
     def k as int init len($index);
     def out as Tally init Tally{locus: $encoded[0].locus, k: $k, sizes: [], copies: [], hets: []};
-    for (def i in 0..(len($samples) * $k)) {
+    for (def i in 0..(len($encoded) * $k)) {
         $out.copies[] = 0;
         $out.hets[] = 0;
     }
@@ -1058,8 +1168,8 @@ func tally(samples as list of list of forensics.Genotype) {
  *
  * summed over the alleles seen in any sample. With one sample (r = 1) the
  * `s²` terms vanish and `a` is 0: only `fis` is defined, the within-sample
- * inbreeding coefficient (`inbreedingCoefficient`). An individual untyped at
- * the locus is left out of its sample.
+ * inbreeding coefficient (`inbreedingCoefficient`). Every genotype must carry
+ * both alleles; to leave out untyped individuals, use `fStatisticsTable`.
  * @param samples {list of list of forensics.Genotype} one sample per
  *   population, every genotype at one locus
  * @return {FStatistics} the locus's components
@@ -1067,7 +1177,15 @@ func tally(samples as list of list of forensics.Genotype) {
  *   an empty allele label, or a mean sample size of 1 or less
  */
 export func fStatistics(samples as list of list of forensics.Genotype) {
-    def t as Tally init tally($samples);
+    def encoded as list of Sample init [];
+    for (def i in 0..len($samples)) {
+        $encoded[] = encode($samples[$i]);
+    }
+    return components(tally($encoded));
+}
+
+# components is fStatistics on a tallied locus.
+func components(t as Tally) {
     def r as int init len($t.sizes);
     def total as int init 0;
     def squares as int init 0;
@@ -1143,15 +1261,16 @@ export func fStatisticsTable(
     }
     def out as list of FStatistics init [];
     for (def locus in $loci) {
-        def samples as list of list of forensics.Genotype init [];
+        # Encoded per population, so no nested genotype list is passed on.
+        def encoded as list of Sample init [];
         for (def i in 0..len($populations)) {
             def sample as list of forensics.Genotype init typedAt($populations[$i], $locus);
             if (len($sample) == 0) {
                 fail("locus '" + $locus + "': population {$i} has nobody typed there");
             }
-            $samples[] = $sample;
+            $encoded[] = encode($sample);
         }
-        $out[] = fStatistics($samples);
+        $out[] = components(tally($encoded));
     }
     return $out;
 }
@@ -1304,21 +1423,60 @@ def struct LdRun {
     state as int
 };
 
-# Paired is two loci's genotypes of the individuals typed at both, aligned.
-def struct Paired {
-    first as list of forensics.Genotype,
-    second as list of forensics.Genotype
+# LocusClasses is every locus of a profile set classified once: classes[l * n
+# + i] is profile i's genotype class at locus l (genotypeClasses over the
+# profiles typed there), -1 if untyped; counts[l] is the locus's class count.
+def struct LocusClasses {
+    n as int,
+    classes as list of int,
+    counts as list of int
 };
 
-# typedAtBoth collects the genotypes at `a` and `b` of every profile typed at
-# both, in profile order.
-func typedAtBoth(profiles as list of forensics.Profile, a as string, b as string) {
-    def out as Paired init Paired{first: [], second: []};
-    for (def i in 0..len($profiles)) {
-        if (maps.has($profiles[$i].loci, $a) and maps.has($profiles[$i].loci, $b)) {
-            $out.first[] = $profiles[$i].loci[$a];
-            $out.second[] = $profiles[$i].loci[$b];
+# classifyLoci encodes each locus once over all profiles. Per pair the
+# individuals typed at both are then a filter over two int columns, not a
+# re-encoding of genotype lists (276 pairs re-encoded took 20 s at n = 2000).
+func classifyLoci(profiles as list of forensics.Profile, names as list of string) {
+    def np as int init len($profiles);
+    def out as LocusClasses init LocusClasses{n: $np, classes: [], counts: []};
+    for (def locus in $names) {
+        def sample as list of forensics.Genotype init [];
+        for (def i in 0..$np) {
+            if (maps.has($profiles[$i].loci, $locus)) {
+                $sample[] = $profiles[$i].loci[$locus];
+            }
         }
+        def classes as list of int init genotypeClasses(encode($sample));
+        def next as int init 0;
+        for (def i in 0..$np) {
+            if (maps.has($profiles[$i].loci, $locus)) {
+                $out.classes[] = $classes[$next];
+                $next = $next + 1;
+            } else {
+                $out.classes[] = -1;
+            }
+        }
+        $out.counts[] = classCount($classes);
+    }
+    return $out;
+}
+
+# pairColumn renumbers locus l's classes over the individuals in `keep` by
+# first appearance, as genotypeClasses on that subset would.
+func pairColumn(lc as LocusClasses, l as int, keep as list of int) {
+    def remap as list of int init [];
+    for (def c in 0..$lc.counts[$l]) {
+        $remap[] = -1;
+    }
+    def base as int init $l * $lc.n;
+    def next as int init 0;
+    def out as list of int init [];
+    for (def i in $keep) {
+        def c as int init $lc.classes[$base + $i];
+        if ($remap[$c] < 0) {
+            $remap[$c] = $next;
+            $next = $next + 1;
+        }
+        $out[] = $remap[$c];
     }
     return $out;
 }
@@ -1361,31 +1519,41 @@ func classCount(classes as list of int) {
 # observed one. Given both margins a table's probability is
 #   Π r_i! Π c_j! / (n! Π n_ij!)
 # so it varies only through -Σ ln n_ij!, scored as hwePermutationTest does.
+# The count table is dense up to `denseCells` cells (tableSlots).
 func ldRun(
     rows as list of int,
     cols as list of int,
     ncols as int,
     nrows as int,
     permutations as int,
-    seed as int) {
+    seed as int,
+    denseCells as int) {
     def n as int init len($rows);
-    def cells as list of int init [];
-    def stamp as list of int init [];
-    for (def i in 0..($nrows * $ncols)) {
-        $cells[] = 0;
-        $stamp[] = 0;
-    }
+    def sparse as bool init $nrows * $ncols > $denseCells;
+    def slots as int init tableSlots($nrows * $ncols, $n, $denseCells);
+    def mask as int init $slots - 1;
+    def keys as list of int init keyList($sparse, $slots);
+    def cells as list of int init zeros($slots);
+    def stamp as list of int init zeros($slots);
     def lnCount as list of float init lnTable($n);
     # observed table, stamped as draw 0's predecessor (-1)
     def observed as float init 0.0;
     for (def i in 0..$n) {
-        def cell as int init $rows[$i] * $ncols + $cols[$i];
-        if ($stamp[$cell] != -1) {
-            $stamp[$cell] = -1;
-            $cells[$cell] = 0;
+        def slot as int init $rows[$i] * $ncols + $cols[$i];
+        if ($sparse) {
+            def key as int init $slot;
+            $slot = ($rows[$i] * HASH_X + $cols[$i] * HASH_Y) & $mask;
+            while ($stamp[$slot] == -1 and $keys[$slot] != $key) {
+                $slot = ($slot + 1) & $mask;
+            }
+            $keys[$slot] = $key;
         }
-        $cells[$cell] = $cells[$cell] + 1;
-        $observed = $observed - $lnCount[$cells[$cell]];
+        if ($stamp[$slot] != -1) {
+            $stamp[$slot] = -1;
+            $cells[$slot] = 0;
+        }
+        $cells[$slot] = $cells[$slot] + 1;
+        $observed = $observed - $lnCount[$cells[$slot]];
     }
     $observed = $observed + math.log1p(TIE_TOLERANCE);
     def accept as list of int init acceptLimits($n);
@@ -1408,26 +1576,65 @@ func ldRun(
             def x as int init $pool[$pick];
             $pool[$pick] = $pool[$j];
             $pool[$j] = $x;
-            def cell as int init $rows[$j] * $ncols + $x;
-            if ($stamp[$cell] != $draw) {
-                $stamp[$cell] = $draw;
-                $cells[$cell] = 0;
+            def slot as int init $rows[$j] * $ncols + $x;
+            if ($sparse) {
+                def key as int init $slot;
+                $slot = ($rows[$j] * HASH_X + $x * HASH_Y) & $mask;
+                while ($stamp[$slot] == $draw and $keys[$slot] != $key) {
+                    $slot = ($slot + 1) & $mask;
+                }
+                $keys[$slot] = $key;
             }
-            $cells[$cell] = $cells[$cell] + 1;
-            $score = $score - $lnCount[$cells[$cell]];
+            if ($stamp[$slot] != $draw) {
+                $stamp[$slot] = $draw;
+                $cells[$slot] = 0;
+            }
+            $cells[$slot] = $cells[$slot] + 1;
+            $score = $score - $lnCount[$cells[$slot]];
             $j = $j - 1;
         }
-        def last as int init $rows[0] * $ncols + $pool[0];
-        if ($stamp[$last] != $draw) {
-            $stamp[$last] = $draw;
-            $cells[$last] = 0;
-        }
-        $score = $score - $lnCount[$cells[$last] + 1];
+        $score = $score -
+            $lnCount[lastCount(
+            $rows[0],
+            $pool[0],
+            $ncols,
+            $sparse,
+            $mask,
+            $keys,
+            $cells,
+            $stamp,
+            $draw) + 1];
         if ($score <= $observed) {
             $hits = $hits + 1;
         }
     }
     return LdRun{hits: $hits, state: $state};
+}
+
+# lastCount is the current count of cell (row, col) in a count table's lists,
+# 0 if this draw has not filled it. The lists are read only (borrowed).
+func lastCount(
+    row as int,
+    col as int,
+    ncols as int,
+    sparse as bool,
+    mask as int,
+    keys as list of int,
+    cells as list of int,
+    stamp as list of int,
+    draw as int) {
+    def slot as int init $row * $ncols + $col;
+    if ($sparse) {
+        def key as int init $slot;
+        $slot = ($row * HASH_X + $col * HASH_Y) & $mask;
+        while ($stamp[$slot] == $draw and $keys[$slot] != $key) {
+            $slot = ($slot + 1) & $mask;
+        }
+    }
+    if ($stamp[$slot] != $draw) {
+        return 0;
+    }
+    return $cells[$slot];
 }
 
 # ldPair runs the test on two aligned samples (one entry per individual) from
@@ -1455,7 +1662,7 @@ func ldPair(
     if ($nrows == 1 or $ncols == 1) {
         return LdRun{hits: $permutations, state: $seed};
     }
-    return ldRun($rows, $cols, $ncols, $nrows, $permutations, $seed);
+    return ldRun($rows, $cols, $ncols, $nrows, $permutations, $seed, DENSE_CELLS);
 }
 
 /**
@@ -1507,7 +1714,9 @@ export func ldPermutationTest(
  * one where the previous stopped. With k loci there are k (k - 1) / 2 tests,
  * so about 5% fall below 0.05 under independence; judge them against a
  * multiple-testing correction (Bonferroni: 0.05 / count), not one by one.
- * Cost is about pairs × permutations × individuals.
+ * Cost is about 5 µs per pair, individual and permutation, plus about 40 ms
+ * per pair of setup at 2000 people: 24 loci (276 pairs) of 2000 people take
+ * about 1 min at 20 permutations and about 8 h at `DEFAULT_PERMUTATIONS`.
  * @param profiles {list of forensics.Profile} the sample, one profile per
  *   individual
  * @param permutations {int} shuffles per pair, 1 to `MAX_PERMUTATIONS`
@@ -1534,17 +1743,39 @@ export func ldPermutationTests(
     if (len($names) < 2) {
         fail("ldPermutationTests needs at least two loci");
     }
+    def lc as LocusClasses init classifyLoci($profiles, $names);
+    def np as int init len($profiles);
     def out as list of LdTest init [];
     def state as int init $seed;
     for (def x in 0..len($names)) {
         for (def y in ($x + 1)..len($names)) {
-            def pair as Paired init typedAtBoth($profiles, $names[$x], $names[$y]);
-            def n as int init len($pair.first);
+            def keep as list of int init [];
+            for (def i in 0..$np) {
+                if ($lc.classes[$x * $np + $i] >= 0 and $lc.classes[$y * $np + $i] >= 0) {
+                    $keep[] = $i;
+                }
+            }
+            def n as int init len($keep);
             def p as float init 1.0;
             if ($n >= 2) {
-                def run as LdRun init ldPair($pair.first, $pair.second, $permutations, $state);
-                $state = $run.state;
-                $p = convert.toFloat($run.hits + 1) / convert.toFloat($permutations + 1);
+                def rows as list of int init pairColumn($lc, $x, $keep);
+                def cols as list of int init pairColumn($lc, $y, $keep);
+                def nrows as int init classCount($rows);
+                def ncols as int init classCount($cols);
+                # one genotype at either locus: every shuffle is the observed
+                # table, p = 1, and no draw is taken (as ldPair)
+                if ($nrows > 1 and $ncols > 1) {
+                    def run as LdRun init ldRun(
+                        $rows,
+                        $cols,
+                        $ncols,
+                        $nrows,
+                        $permutations,
+                        $state,
+                        DENSE_CELLS);
+                    $state = $run.state;
+                    $p = convert.toFloat($run.hits + 1) / convert.toFloat($permutations + 1);
+                }
             }
             $out[] = LdTest{first: $names[$x], second: $names[$y], n: $n, pValue: $p};
         }

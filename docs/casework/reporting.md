@@ -1,9 +1,9 @@
 # Reporting a match
 
-A match probability is computed from a database of a few hundred or thousand
-people, so its allele frequencies are estimates. This page covers two
-published allowances for that sampling error and the verbal scale an
-evaluative report puts the likelihood ratio on.
+A match probability's allele frequencies are estimates from a database of a
+few hundred or thousand people. `reporting.j` implements three published
+allowances for that sampling error, and the ENFSI verbal scale for the
+likelihood ratio.
 
 ```jennifer
 import "@deckyard/forensicgenetics/" as forensicgenetics;
@@ -26,6 +26,23 @@ def logRmp as float init reporting.log10SizeBiasRandomMatchProbability($db, $sus
 The correction replaces the `5/(2N)` floor: an allele the table lacks scores
 `2 / (2N + 4)`. It vanishes as `N` grows. `sizeBiasAlleleFrequency` shows one
 allele's adjusted frequency.
+
+## The Bayesian estimator
+
+FSR-GUI-0012 section 11.4 takes each allele's posterior mean under a Dirichlet
+prior as its frequency: `(x + 1/k) / (2N + 1)` with `k` the alleles the table
+lists (11.4.1), or `(x + 1/(k + 2)) / (2N + 1)` to allow for unobserved
+alleles (11.4.2):
+
+```jennifer
+def lr as float init reporting.bayesianLikelihoodRatio($db, $suspect,
+    forensicgenetics.THETA_GENERAL, reporting.PRIOR_ONE_OVER_K_PLUS_TWO);
+```
+
+An allele the table lacks scores `(1/(k + 2)) / (2N + 1)`, smaller than the
+size-bias `2 / (2N + 4)`. `bayesianFrequency` shows one allele's estimate;
+`PRIOR_UNIFORM` gives `(x + 1) / (2N + k)`. Unlike the size-bias correction,
+the estimate does not depend on the profile being scored.
 
 ## A posterior bound on the RMP
 
@@ -50,9 +67,12 @@ def q as list of float init reporting.log10RmpQuantiles($db, $suspect,
 ```
 
 The prior is the caller's choice: `PRIOR_UNIFORM` (one pseudo-count per
-allele) or `PRIOR_ONE_OVER_K` (`1/k`; Curran & Buckleton 2011 compare the
-two). The simulation is seeded; report the seed and the number of draws with
-the bound. The quantile's Monte Carlo error is about `sqrt(q (1 - q) / draws)`
+allele), `PRIOR_ONE_OVER_K` (`1/k`; Curran & Buckleton 2011 compare the
+two) or `PRIOR_ONE_OVER_K_PLUS_TWO` (`1/(k + 2)`, FSR-GUI-0012 11.4.2). Here
+`PRIOR_ONE_OVER_K`'s `k` also counts profile alleles the table lacks, so the
+prior stays a proper Dirichlet of mass 1; its posterior mean matches 11.4.1
+only when every profile allele is listed. The simulation is seeded; report
+the seed and the number of draws with the bound. The quantile's Monte Carlo error is about `sqrt(q (1 - q) / draws)`
 on the probability scale, so a 99% bound at 10,000 draws rests on about 100
 draws in the tail.
 
@@ -91,5 +111,5 @@ support for the first proposition is not support for the alternative.
 ## Worked example
 
 `examples/reporting.j` scores a five-locus profile on the synthetic example
-table: the plug-in LR, the size-bias LR, the 99% bound, and their verbal
-equivalents.
+table: the plug-in LR, the size-bias LR, the Bayesian LR, the 99% bound, and
+their verbal equivalents.

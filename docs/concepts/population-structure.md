@@ -91,9 +91,9 @@ def pairs as list of popstats.LdTest init popstats.ldPermutationTests($profiles,
 A 20-locus set has 190 pairs. Under independence about 5% of them fall below
 0.05 by chance, so a handful of small p-values is expected. Judge them
 against a correction: Bonferroni rejects at `0.05 / 190`. A pair that stays
-significant, or a locus that is significant against many others, is worth
-checking (physical linkage, typing artefacts, or a sample pooled from
-different populations).
+significant, or a locus that is significant against many others, points to
+physical linkage, a typing artefact, or a sample pooled from different
+populations.
 
 Cost is about pairs × permutations × people: budget the permutation count on
 a large set, and raise it only for pairs near the threshold.
