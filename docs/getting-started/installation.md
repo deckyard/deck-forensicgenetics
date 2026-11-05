@@ -21,7 +21,7 @@ overlays, to `vendor/deckyard/forensicgenetics/`.
 [`jvc`](https://github.com/jennifer-language/jvc) does that:
 
 ```sh
-jvc add @deckyard/forensicgenetics ">=0.3.0"
+jvc add @deckyard/forensicgenetics ">=0.4.0"
 jvc install
 ```
 
@@ -46,7 +46,7 @@ holds one directory `deckyard-forensicgenetics-<version>/` with `src/`, the
 manifest, `README.md` and `LICENSE`:
 
 ```sh
-v=0.3.0
+v=0.4.0
 mkdir -p vendor/deckyard/forensicgenetics
 tar -xzf deckyard-forensicgenetics-$v.tar.gz
 cp deckyard-forensicgenetics-$v/src/*.j vendor/deckyard/forensicgenetics/
