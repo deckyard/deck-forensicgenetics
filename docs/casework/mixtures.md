@@ -1,8 +1,11 @@
 # Mixtures
 
 A mixed stain has no genotype, only the alleles present at each locus. The
-deck answers the question that needs no assumption about contributors: what
-fraction of the population cannot be excluded?
+core answers the question that needs no assumption about contributors: what
+fraction of the population cannot be excluded? `mixture.j` answers the
+question that does: how much more probable is the stain if the suspect
+contributed? See
+[Likelihood ratio with drop-out and drop-in](#likelihood-ratio-with-drop-out-and-drop-in).
 
 ```jennifer
 def stain as forensicgenetics.Mixture init forensicgenetics.mixture("stain", {
@@ -80,7 +83,103 @@ every locus excludes almost nobody, and its CPI approaches 1.
   excluded at that locus, which is why guidance restricts CPI to complete,
   unambiguous mixtures.
 
-A likelihood ratio with explicit hypotheses ("suspect and one unknown" against
-"two unknowns") that models drop-in, dropout and peak heights is full mixture
-deconvolution (the EuroForMix approach). It is not in this deck; see
-[Limitations](../project/limitations.md).
+A likelihood ratio with explicit hypotheses uses the suspect's profile and
+models drop-out; see the next section.
+
+## Likelihood ratio with drop-out and drop-in
+
+`mixture.j` computes the semi-continuous (qualitative) LR of LRmix (Gill et
+al. 2007; Haned et al. 2012): allele presence, a drop-out probability per
+contributor, a drop-in probability, θ. Peak heights are not used.
+
+```jennifer
+import "@deckyard/forensicgenetics/mixture.j" as mixture;
+
+# Hp: victim and suspect. Hd: victim and one unknown.
+def hp as mixture.Hypothesis init mixture.hypothesis(
+    "Hp", [$victim, $suspect], [0.0, 0.1], 0, 0.1);
+def hd as mixture.Hypothesis init mixture.hypothesis(
+    "Hd", [$victim], [0.0], 1, 0.1);
+
+def lr as float init mixture.mixtureLR($db, $stain, $hp, $hd, 0.05, forensicgenetics.THETA_GENERAL);
+def log10Lr as float init mixture.log10MixtureLR($db, $stain, $hp, $hd, 0.05, 0.01);
+def perLocus as map of string to float init mixture.locusLRs($db, $stain, $hp, $hd, 0.05, 0.01);
+```
+
+`hypothesis(name, known, knownDropout, unknowns, unknownDropout)`: the known
+contributors with one drop-out probability each, and a number of unknowns
+sharing one. The last two arguments of the LR functions are the drop-in
+probability `c` and θ.
+
+### The model
+
+At one locus, with `E` the observed alleles:
+
+- an allele a contributor carries is lost only if every copy drops out:
+  probability `d` per copy, so `d²` for a homozygote and `d1 · d2` for an
+  allele two contributors share;
+- an observed allele nobody carries is a drop-in, `c · p_a` each; no drop-in
+  at all is `1 - c`;
+- the unknowns' genotypes are summed over, weighted by the Balding-Nichols
+  sampling formula conditioned on every known contributor of either
+  hypothesis (`mixture.conditioningProfiles(hp, hd)`).
+
+`LR = Π over loci of P(E | Hp) / P(E | Hd)`. Formulae and sources:
+[Formulae](../project/formulae.md#mixtures-semi-continuous-likelihood-ratio).
+
+### Checks the model passes
+
+- Suspect alone against one unknown, `d = 0`, `c = 0`: the LR equals
+  `forensicgenetics.matchLikelihoodRatio`, at any θ.
+- Two unknowns, `d = 0`, `c = 0`, evidence `{a, b}`:
+  `(pa + pb)⁴ - pa⁴ - pb⁴`.
+- No allele seen, `d` equal for suspect and unknown: LR 1.
+
+### Choosing parameters
+
+- **Number of contributors.** `mixture.minimumContributors(stain)` is the
+  floor, `ceil(max alleles at a locus / 2)`. Drop-out can hide contributors;
+  compare LRs over plausible counts.
+- **Drop-out.** `d = 0` makes a missing suspect allele an exclusion: Hp gives
+  probability 0 and the LR is 0 (`log10MixtureLR` throws). LRmix practice is
+  to report over a range of `d`, or a conservative value from a drop-out
+  sensitivity plot.
+- **Drop-in.** `c = 0` makes an allele no contributor carries impossible; if
+  Hd also cannot explain a locus, `locusLR` throws.
+- **Cost.** Each unknown multiplies the work by the number of genotypes at the
+  locus. At most `mixture.MAX_UNKNOWNS` (3) unknowns and
+  `mixture.MAX_LOCUS_ALLELES` (10) alleles per locus; a locus over either
+  throws. Leave a locus out with `mixture.restrictMixture(stain, keep)`.
+
+### Worked example
+
+`examples/mixture.j` (synthetic table), victim + suspect against victim +
+unknown, `c = 0.05`, θ = 0.01:
+
+```
+stain needs at least 2 contributors
+
+drop-out   log10 LR
+0.05     1.408
+0.10     1.672
+0.30     2.052
+
+per locus, d = 0.1
+  D3S1358    LR = 0.70
+  vWA        LR = 37.19
+  TH01       LR = 14.15
+  D16S539    LR = 0.13
+```
+
+D3S1358 lacks the suspect's 18: a drop-out under Hp, so the locus favours Hd.
+D16S539 shows a 14 nobody known carries: under Hp it must be a drop-in, under
+Hd the unknown can carry it. At `d = 0` the suspect is excluded at D3S1358.
+
+### What the model does not do
+
+- No peak heights, stutter or degradation: those need a continuous model
+  (EuroForMix, STRmix).
+- One drop-out probability per contributor, the same at every locus.
+- Relatives as alternative contributors are not modelled.
+
+See [Limitations](../project/limitations.md#mixtures-stop-at-the-semi-continuous-lr).
