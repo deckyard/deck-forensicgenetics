@@ -14,9 +14,10 @@ jennifer test src/pedigree_test.j --filter='.*Peeling.*'
 jennifer test src/kinship_test.j --format=tap
 ```
 
-418 tests across eleven overlays. Statement coverage of `forensicgenetics.j` is
-99.2%; the two uncovered lines are the zero-RMP guards in the likelihood-ratio
-functions, which only a product underflowing to zero reaches.
+495 tests across eleven overlays. Statement coverage of `forensicgenetics.j` is
+99.2%; the two uncovered lines are the zero-RMP guard in `reciprocalLR`, which
+only a product underflowing to zero reaches, and the final `return 0` of
+`compareAlleles`, unreachable because identical labels return early.
 
 ## How expectations are chosen
 
@@ -50,7 +51,6 @@ derived independently:
   overlay, which the Monte Carlo estimate must match within 4 SE.
 - Clopper-Pearson bounds by bisecting the exact binomial CDF outside Jennifer,
   and at `k = 0` against the closed form `1 - α^(1/N)`.
-
 - Kit panels from the set relations and locus counts the standards and
   manuals state (GlobalFiler = CODIS 20 + SE33, ESX 17 = ESS + D2S1338,
   D16S539, D19S433, SE33), written out again in the overlay.
@@ -58,7 +58,10 @@ derived independently:
 - X-STR LRs and daughter paternity indices by hand from the X-IBD forms
   (`5`, `10`, `5.5`, `14.375` and so on, each with its arithmetic); every
   relationship constant's X coancestry against Gomes et al. (2020), Table 5;
-  linkage-group probabilities summed by hand over the female's phases; the
+  linkage-group probabilities summed by hand over the female's phases;
+  wide groups (up to `MAX_GROUP_HETEROZYGOUS_LOCI` heterozygous loci, every
+  haplotype at the floor `f`) against closed forms (full sisters
+  `1 / (2 · 4^h · f)`, daughter trio `1 / f`); the
   Argus X-12 groups against the QIAGEN handbook's Table 1.
 - Size-bias frequencies by hand from `(x + 2)/(2N + 4)` and `(x + 4)/(2N + 4)`
   on a table with `N = 100`, and with θ against the core's
@@ -119,13 +122,20 @@ Other asserted invariants:
 - `hweExactTest` (Wigginton recurrence) equals a direct Levene-formula sum
   through `lgamma` to 1e-9; `hwePermutationTest` is within 4 standard errors
   of the exact value; the generator reproduces the check value ISO C++ requires of
-  `std::minstd_rand` (state 399268537 after 10000 steps from seed 1).
+  `std::minstd_rand` (state 399268537 after 10000 steps from seed 1). The
+  hashed count table (forced with a dense limit of 0) gives the dense run's
+  p-values and LD hits exactly; with every allele or genotype distinct each
+  re-pairing is as probable as the observed table, so p = 1 exactly at 1000
+  people. `ldPermutationTests` gives, bit for bit, the p-values of each pair
+  encoded on its own and run on one stream.
 - `10^log10RandomMatchProbability` equals `randomMatchProbability`.
 - `reporting`: the size-bias correction shrinks to the plug-in value as `N`
   grows (relative 1e-6 at `N = 10⁸`); the posterior median of log10 RMP is
   within 3e-4 of the plug-in value at `N = 10⁶`; the posterior interval
-  narrows with `N`; gamma and normal deviates have the right moments; the
-  generator reproduces the `std::minstd_rand` check value.
+  narrows with `N`; gamma deviates have the right mean and variance, and
+  splitting a draw across calls changes no deviate; the
+  generator reproduces the `std::minstd_rand` check value; a table summing
+  above 1 gets posterior mass `2N + 1`.
 - `search.familialSearch` reproduces `kinship.kinshipLR` exactly for every
   candidate and relationship tested; a panel-restricted profile scores as
   `forensicgenetics.restrict` over the same loci.
@@ -148,7 +158,9 @@ Other asserted invariants:
   marginal.
 - Banded alignment equals a full-width pass, byte for byte, on randomised
   sequences with substitutions and indels, including cases that force the band
-  to widen.
+  to widen, and equals an independent full-matrix Needleman-Wunsch in the
+  overlay (`fullMatrix`) on those and on a 40-base shifted window, where the
+  optimum leaves a band whose traceback never touches its edge.
 
 ## CI gates
 

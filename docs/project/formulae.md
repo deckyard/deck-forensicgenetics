@@ -85,8 +85,14 @@ Balding-Nichols sampling formula, after the `n` alleles of the typed profiles
 P(next = a) = (n_a θ + (1-θ) p_a) / (1 + (n-1) θ)
 ```
 
-with a factor 2 per heterozygous unknown. At `θ = 0` this is
-`Π P(G_i)` under Hardy-Weinberg. Alleles in neither `E` nor a typed profile
+with a factor 2 per heterozygous unknown. The product depends only on how
+many copies `c_a` of each class the 2u draws take, so it is computed as
+
+```
+Π over a of Π_{j<c_a} ((n_a + j) θ + (1-θ) p_a)  /  Π_{m<2u} (1 + (n + m - 1) θ)
+```
+
+At `θ = 0` this is `Π P(G_i)` under Hardy-Weinberg. Alleles in neither `E` nor a typed profile
 form one class of frequency `1 - Σ p` (exact: none of them is observed).
 Unknowns share `d_u`, so combinations are enumerated as multisets weighted
 by their number of orderings.
@@ -188,7 +194,7 @@ direction:
 P(t | s) = 1 - rate                                   if t = s
          = rate · (1 - decay) · decay^(k-1) / 2       otherwise
 
-k = max(1, round(|value(s) - value(t)|))
+k = max(1, round(|value(s) - value(t)|))             exact decimal, halves up
 F(x) = ½ · P(x | f1) + ½ · P(x | f2)                 alleged father (f1, f2)
 ```
 
@@ -300,13 +306,16 @@ peeled once per component and the results multiplied.
 
 Alleles no typed member shows are pooled into one class with their combined
 frequency; untyped members' alleles are exchangeable, so this is exact. If the
-observed alleles' floored frequencies sum to exactly 1 there is no lumped
-class. If they sum past 1 (a small `N` with every allele observed) the locus
+observed alleles' floored frequencies sum to 1 (within `1e-9`, for float
+rounding) there is no lumped class. If they sum past that (a small `N` with every allele observed) the locus
 throws: kept as they are, an untyped founder's prior would sum to more than 1
 and the ratio would depend on how many untyped people each hypothesis names;
 rescaled to 1, a floored allele would fall below its `5/(2N)` floor and the
 module would stop agreeing with `kinship.j`. Leave the locus out with
 `restrict`, or use a larger table.
+
+The implementation computes each message once, bottom-up over a depth-first
+order of the graph from `r`, without recursion.
 
 *Elston & Stewart (1971); the message-passing form is equivalent to the
 classical anterior/posterior recursion.*
@@ -340,11 +349,25 @@ lineage LR = 1 / bound
 
 Global Needleman-Wunsch with match `+1`, mismatch `-1`, gap `-2`. Ties in the
 traceback prefer the diagonal, then a deletion, then an insertion, so an
-equal-scoring run is reported as substitutions. Indels are then slid to the 3'
-end of any homopolymer run.
+equal-scoring run is reported as substitutions. The matrix is filled in a band
+`|i - j| <= w`, `w` doubling from 16, and a band is accepted only when its
+score `S` beats the best any path leaving it can reach (Fickett 1984; Ukkonen
+1985). Such a path visits diagonal `±(w + 1)` and ends on `m - n`, so it has at
+least `g = 2(w + 1) - |m - n|` gaps and at most `(m + n - g) / 2` diagonal
+moves:
 
-*Needleman & Wunsch (1970). EMPOP's phylogenetic alignment rules are not
-applied; see [Limitations](limitations.md).*
+```
+accept when  S > floor((m + n - g) / 2) * match + g * gap
+```
+
+A tie widens too, so the result equals the full-matrix traceback. Each
+maximal gap run is then slid right as a block while the base after it equals
+the base opposite its first column, which moves an indel to the 3' end of a
+homopolymer or tandem-repeat run (`GACACT` -> `GACACACT` is `5.1A 5.2C`).
+
+*Needleman & Wunsch (1970); Fickett (1984), Nucleic Acids Res. 12:175-179;
+Ukkonen (1985), Inform. Control 64:100-118. EMPOP's phylogenetic alignment
+rules are not applied; see [Limitations](limitations.md).*
 
 ## Population statistics
 
@@ -410,7 +433,8 @@ ties.
   P(h + 2) = P(h) · 4 hom_r hom_c / ((h + 2)(h + 1))
   ```
 
-  then normalised.
+  then normalised. Terms are relative to the mode's; an observed count below
+  float range relative to it gives `p = 0`.
 - `hwePermutationTest`, any number of alleles: the `2n` alleles are shuffled
   (Fisher-Yates) and re-paired `B` times, which samples tables from the
   conditional distribution above (Guo & Thompson 1992, Monte Carlo test). With
@@ -555,7 +579,10 @@ group's table (`max(listed, minFrequency)`). A female's probability at a group
 sums over the unordered haplotype pairs her genotypes allow (`2^(h-1)` for `h`
 heterozygous loci); a pairwise term sums over both persons' pairs. In the trio
 the mother's transmission averages over her pairs weighted by
-`P(pair) / Σ P(pair)`. Mutation within a group is the product of per-locus
+`P(pair) / Σ P(pair)`. The pair sum is evaluated factorised, in time linear
+in the pair counts: the `k0` part is `P(A) P(B)`; a haplotype `x` lies in at
+most one of B's pairs, so `Σ_B Q(Gb, x)` is the frequency of its partner
+there and `[Ga == Gb]` is a lookup. Mutation within a group is the product of per-locus
 probabilities. A group is inherited without recombination; groups and
 ungrouped loci multiply.
 
@@ -571,6 +598,7 @@ Models with recombination and linkage disequilibrium, not implemented:
 Tillmar AO, Egeland T, Lindblom B, Holmlund G, Mostad P (2011), Forensic Sci.
 Int. Genet. 5(5):506-511; Kling D, Dell'Amico B, Tillmar AO (2015),
 "FamLinkX", Forensic Sci. Int. Genet. 17:1-7.*
+
 ## Sampling uncertainty of a match probability
 
 Counts are read back from the table: `x_a = p_a · 2N` (unrounded; 0 for an
@@ -593,27 +621,60 @@ match probability calculation: how to allow for population stratification,
 relatedness, database selection and single bands", Forensic Sci. Int.
 64:125-140, as stated in Forensic Science Regulator, "Guidance: The use of
 allele frequency databases to assign a likelihood ratio (LR) in human DNA
-cases", FSR-GUI-0012 Issue 1 (February 2026), section 11.3,
-<https://assets.publishing.service.gov.uk/media/5f5253a68fa8f54298e94927/FSR-G-213_DNA_profile_interpretation_Issue_2_Final.pdf>
-(read 2026-11-05).
+cases", FSR-GUI-0012 Issue 1 (February 2026), section 11.3 "Pseudocounting
+(Size Bias method of Balding and Nichols)",
+[FSR-GUI-0012 Issue 1, PDF](https://assets.publishing.service.gov.uk/media/5f5253a68fa8f54298e94927/FSR-G-213_DNA_profile_interpretation_Issue_2_Final.pdf)
+(read 2026-11-05; the file at that address is FSR-GUI-0012 Issue 1, 29 pages,
+under an older FSR-G-213 file name).
 The original paper was not read.*
+
+Bayesian estimator (`bayesianFrequency`), FSR-GUI-0012 section 11.4 with
+`k` the listed alleles, also for an unlisted allele (`x = 0`):
+
+```
+PRIOR_UNIFORM:              f = (x + 1) / (2N + k)
+PRIOR_ONE_OVER_K:           f = (x + 1/k) / (2N + 1)          (11.4.1)
+PRIOR_ONE_OVER_K_PLUS_TWO:  f = (x + 1/(k + 2)) / (2N + 1)    (11.4.2)
+```
+
+FSR writes `n` for the allele total (`2N` here) and defines `k` as the
+alleles with non-zero observations; `withLocus` refuses a zero frequency, so
+that is the listed alleles. `bayesianRandomMatchProbability`
+evaluates NRC II 4.2 at `f`; the combination with `θ` is the deck's.
+
+*FSR-GUI-0012 Issue 1 (February 2026), sections 11.4.1-11.4.2 (same PDF as
+above, read 2026-11-05). The uniform-prior form is the Dirichlet(1) posterior
+mean; the section names the uniform prior without writing it out.*
 
 Posterior bound (the highest-posterior-density approach): at each locus
 
 ```
 (p_1, ..., p_k, p_rest) ~ Dirichlet(x_1 + α, ..., x_k + α, r)
 
-α = 1 (PRIOR_UNIFORM)  or  α = 1/k (PRIOR_ONE_OVER_K)
-k = listed alleles + profile alleles the table lacks
+α = 1        PRIOR_UNIFORM,  k = listed + profile alleles the table lacks
+α = 1/k      PRIOR_ONE_OVER_K, same k
+α = 1/(k+2)  PRIOR_ONE_OVER_K_PLUS_TWO, k + 2 categories = listed alleles +
+             two unobserved slots; an unlisted profile allele takes a slot,
+             unused slots' α join p_rest
 r = 2N - Σ x_i, the count a partial table leaves (no prior; dropped if 0)
+x_i scaled by 2N / Σ x_i when Σ x_i > 2N (a table summing above 1)
 ```
+
+Both non-uniform priors are proper Dirichlets of total mass 1, so an
+allele's posterior mean is `(x + α) / (2N + 1)`. For `PRIOR_ONE_OVER_K` that
+is 11.4.1 when every profile allele is listed (`k = listed`), 11.4.2 when both
+alleles of a heterozygote are unlisted (`k = listed + 2`), and neither with
+one unlisted allele (`1/(listed + 1)`). `PRIOR_ONE_OVER_K_PLUS_TWO` has mean
+11.4.2 in every case.
 
 Only the profile's alleles enter the RMP, so the other classes are summed
 into one (the Dirichlet aggregation property; exact). Per draw:
 `G_j ~ Gamma(α_j, 1)` independently, `p_j = G_j / Σ G`, the genotype
 frequency is NRC II 4.2 at `p`, and the RMP the product over independent
 loci. The reported value is the nearest-rank quantile of `draws` simulated
-`log10 RMP`; `likelihoodRatioLowerBound` is `10^-(level quantile)`.
+`log10 RMP`, the `ceil(q · draws)`-th smallest, the product taken exactly in
+decimal from `q`'s shortest decimal form (in float `0.07 · 100` is
+`7.000000000000001`, rank 8); `likelihoodRatioLowerBound` is `10^-(level quantile)`.
 
 Gamma deviates, `α ≥ 1` (Marsaglia & Tsang 2000):
 
@@ -636,7 +697,7 @@ read: they prefer the highest-posterior-density method, with non-zero θ);
 Curran & Buckleton (2011), "An investigation into the performance of methods
 for adjusting for sampling uncertainty in DNA likelihood ratio calculations",
 Forensic Sci. Int. Genet. 5(5):512-516 (abstract read: uniform against 1/k
-prior); FSR-GUI-0012 section 11.4 (the 1/k prior); Cowell (2015),
+prior); FSR-GUI-0012 section 11.4 (the 1/k and 1/(k + 2) priors); Cowell (2015),
 arXiv:1509.08361, section 3 (the Dirichlet posterior `Dir(α_i + m_i)` from
 database counts). Marsaglia & Tsang (2000), "A simple method for generating
 gamma variables", ACM Trans. Math. Softw. 26(3):363-372; Marsaglia & Bray
@@ -677,6 +738,7 @@ approved version 3.0 (2015), guidance note 4, table on p. 17,
 2026-11-05). The guideline cites Nordgaard, Ansell, Drotz & Jaeger (2012),
 "Scale of conclusions for the value of evidence", Law, Probability and Risk
 11:1-24.*
+
 ## Familias mutation models
 
 `mutation.j`. At a locus with detectable alleles `1..n`, frequencies `π_i`
@@ -692,7 +754,8 @@ Proportional   p_j = π_j / S,  S = Σ_detectable π
                M[i][j] = alpha · p_j                        i ≠ j
                M[i][i] = 1 - alpha + alpha · p_i
 
-Stepwise       class(v) = round(10 (v - round(v)))         microvariant class
+Stepwise       class(v) = round(10 (v - round(v)))         microvariant class,
+                                                            round half to even (R)
                C_i = alleles with class(v_j) = class(v_i), j ≠ i
                O_i = alleles of other classes
                M[i][j] = rate · range^k_ij / Σ_{l in C_i} range^k_il    j in C_i, k = |v_i - v_j|
@@ -703,6 +766,10 @@ Stepwise       class(v) = round(10 (v - round(v)))         microvariant class
 
 Silent         M[s][s] = 1,  M[s][j] = M[i][s] = 0
 ```
+
+Stepwise needs distinct repeat values `v_i` (labels `15` and `15.0` would be
+two alleles with `k = 0`, so a `.0` label and duplicate values throw) and
+`range^k` representable for the largest `k` within a class.
 
 Stepwise with `rate2 = 0` is Familias' "Stepwise"; with `rate2 > 0` its
 "Extended stepwise". Every row sums to 1; an entry outside `[0, 1]` throws.

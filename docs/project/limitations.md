@@ -108,9 +108,14 @@ no-assumption question and fail under drop-out. See
 
 ### EMPOP's phylogenetic alignment rules are not applied
 
-`lineage.align` returns a plain optimal alignment with indels slid 3'. EMPOP
-places indels where the mtDNA phylogeny prefers, which can differ for a
-complex indel. Check such a designation against EMPOP before quoting it.
+`lineage.align` returns a plain optimal alignment with each indel run slid
+3' as a block, through homopolymers and tandem repeats alike. EMPOP places
+indels where the mtDNA phylogeny prefers, which can differ for a complex
+indel. Check such a designation against EMPOP before quoting it.
+
+An insertion before the first reference base is numbered after position
+`refStart - 1`; with `refStart = 1` that is position 0 (`0.1G`), which
+`parseDifference` accepts for insertions only.
 
 ### The default mutation rates are placeholders
 
@@ -153,7 +158,8 @@ refused.
 
 ### The multi-allelic HWE test is Monte Carlo
 
-`hweExactTest` is exact for two alleles only. For STR loci,
+`hweExactTest` is exact for two alleles only, and returns 0.0 when the
+p-value is below float range (about 1e-308). For STR loci,
 `hwePermutationTest` estimates the exact p-value by permutation, with standard
 error about `sqrt(p (1 - p) / B)`. Full enumeration and Guo & Thompson's
 Markov chain are not implemented. No multiple-testing correction is applied.
@@ -170,6 +176,7 @@ statistic and its Markov chain are not implemented), within one population
 only; there is no combination across populations (Fisher's method) and no
 multiple-testing correction in `ldPermutationTests`. Haplotype frequencies and
 `D` / `r²` are not estimated.
+
 ### X-STRs use theta 0
 
 `xstr.j` has no sub-population correction. Applying the sampling formula to
@@ -195,13 +202,19 @@ No X-STR allele or haplotype frequencies are bundled, and `linkageGroup`
 imposes no floor: an unlisted haplotype scores at the caller's
 `minFrequency`, or throws at 0. Haplotype tables need large samples, and a
 rare-haplotype floor can dominate the LR; report the table and the floor.
+A female's phase within a group has `2^(h-1)` resolutions for `h`
+heterozygous loci; `xstr.MAX_GROUP_HETEROZYGOUS_LOCI` (12) caps `h`, where
+one group costs about 0.15 s in a pairwise LR and 0.2 s in a trio index.
+Real groups (Argus X-12: three loci) are far below it.
+
 X-STR kinship is pairwise (and trio / duo for a daughter); pedigrees with
 more typed people, X-STR mutation in `kinshipLR`, mutation in the mother, and
 X-STR power-of-exclusion statistics are not implemented.
+
 ### Sampling-uncertainty allowances are single-source only
 
-`reporting.j` applies the size-bias correction and the Dirichlet posterior to
-the single-source RMP and its LR. Mixture, kinship and pedigree LRs get
+`reporting.j` applies the size-bias correction, the Bayesian estimator and the
+Dirichlet posterior to the single-source RMP and its LR. Mixture, kinship and pedigree LRs get
 neither. The posterior treats loci as independent and reads counts as
 `p · 2N` from the published frequencies, so a table rounded to few digits
 gives slightly wrong counts. Combining the size-bias frequencies with θ
@@ -216,29 +229,89 @@ the top and treats `(1, 2)` as weak support; `VerbalEquivalent` states the
 bounds it used. The guideline presents the scale as an illustration; a
 laboratory with its own scale should not use this one.
 
+### Search verdicts are counting rules
+
+`search.search` classes candidates by counts of identical, drop-out and
+mismatching loci against thresholds the caller sets. It does not weigh rare
+against common alleles, model drop-in, or treat a mismatch at a high-mutation
+locus differently. Report a candidate with an RMP or LR over its loci.
+Drop-out is recognised only as a query homozygote against a candidate
+heterozygote carrying that allele.
+
+### Familial search ranks, it does not identify
+
+`search.familialSearch` uses `kinship.kinshipLR` (theta 0). In a large
+database unrelated people reach high LRs by chance, so the ranking is a
+shortlist; half siblings, grandparents and avuncular relatives are
+indistinguishable. In `examples/search.j` a planted full sibling typed at
+eight loci ranks 19th of 200. There is no `log10` variant: a candidate whose
+LR passes the float maximum throws a `"search"` error naming it; score that
+pair with `kinship.log10KinshipLR`.
+
+### Built-in panels cover a fixed list of kits
+
+`panels.j` ships eleven panels whose locus lists are documented by the
+manufacturer or the standard; other kits need `panels.customPanel`.
+`normalizeLocus` knows the aliases listed in [panels](../reference/panels.md)
+and passes any other name through unchanged.
+
+### Long panels underflow or overflow
+
+`randomMatchProbability` and `pedigreeLikelihood` return plain products. Use
+`log10RandomMatchProbability`, `log10PedigreeLikelihood`, or `pedigreeLR`,
+which takes the ratio locus by locus. `mixture.mixtureLR` multiplies locus
+LRs and throws past the float maximum; `mixture.log10MixtureLR` sums their
+logarithms.
+
+A ratio past the float maximum (about `1.8e308`) throws the module's error
+instead of returning infinity: `matchLikelihoodRatio` (RMP below `1e-308`; the
+log10 LR is `-log10RandomMatchProbability`), `matchLikelihoodRatioAcross`, the
+`kinship.kinshipLR...` functions (`log10KinshipLR...`), `pedigree.pedigreeLR`
+(`log10PedigreeLR`), `mixture.mixtureLR` (`log10MixtureLR`),
+`search.familialSearch` (`kinship.log10KinshipLR` for the pair), and the trio
+and duo CPIs, which have no `log10` form:
+a CPI that large needs well over 100 loci. `reporting`'s `sizeBiasLikelihoodRatio`,
+`bayesianLikelihoodRatio` and `likelihoodRatioLowerBound` throw past `1e300`
+(use `log10SizeBiasRandomMatchProbability`, `log10BayesianRandomMatchProbability`
+or `log10RmpQuantiles`).
+
 ## Performance
 
 ### Alignment cost grows with the region, and with divergence
 
-`align` computes a band around the diagonal, so for near-identical sequences
-(a haplotype against its own reference) the cost is roughly linear in the
-region length. Measured: 342 bp in 0.06 s, the ~1.1 kb control region in
-0.2 s, 1600 bp in 0.3 s, all within 50 MB; 14.6 times the length took about
-16 times as long, up to the cap. Divergent sequences widen the band towards the
-full quadratic matrix. `align` refuses a region longer than
-`lineage.MAX_ALIGN_LENGTH` (5000 bases); at that cap a near-identical pair
-takes about 0.9 s.
-
-An eight-locus pedigree LR with four typed people takes about 0.1 s, and
-peeling memory does not grow with pedigree size.
+`align` computes a band around the diagonal and widens it (doubling) until
+its score beats the best score any path leaving the band can reach, so the
+result is the full-matrix optimum. For near-identical sequences (a haplotype
+against its own reference) the first band of half-width 16 suffices and the
+cost is roughly linear in the region length. Measured with eight
+differences: 342 bp in 0.05 s, the ~1.1 kb control region in 0.15 s, 1600 bp
+in 0.22 s, 5000 bp (`lineage.MAX_ALIGN_LENGTH`, the longest accepted) in
+0.7 s. Divergent sequences widen the band towards the full quadratic
+matrix, about 1.5 µs per cell: two unrelated 1100-base sequences take 3.6 s.
+A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000 cells) throws instead,
+which refuses unrelated sequences past about 1100 bases and, at 5000 bases,
+anything needing a band wider than 124 (roughly 10% substitutions). Sliding
+indels 3' is linear: 5000 bases against one take 0.14 s in all.
 
 ### Peeling slows as observed alleles accumulate
+
+Pedigree size costs linear time: validation and peeling are iterative and
+build their indexes once per call. Measured, one locus with four observed
+alleles: a 2000-generation chain (4002 members) validates in 0.2 s and peels in
+1.9 s; one couple with 1000 children peels in 0.6 s.
 
 Cost grows steeply with the number of distinct alleles the typed members show
 at a locus. Measured, one locus: 4 alleles 11 ms, 8 alleles 90 ms, 12 alleles
 0.6 s, 16 alleles 1.9 s, 20 alleles 5.4 s. A large family at a highly
 polymorphic locus can take seconds per locus. Lumping already limits this to
-the observed alleles; beyond that, trim the panel.
+the observed alleles; `pedigree.MAX_PEDIGREE_ALLELES` (20) makes a locus with
+more throw. At the limit, an untyped couple with ten typed children takes
+2.8 s per locus. A typed parent contributes one genotype instead of `G`, so
+families with typed parents are cheap: a 24-locus missing-person `pedigreeLR`
+(10 members, 8 typed, 15-allele table) takes 0.16 s.
+
+An eight-locus pedigree LR with four typed people takes about 0.1 s.
+Peeling memory does not grow with pedigree size.
 
 ### Building a database or profile one entry at a time is quadratic
 
@@ -265,81 +338,69 @@ rows, the pedigree graph walks).
 ### Building a large pedigree is quadratic
 
 `withFounder` and `withChild` return copies, so an `n`-member pedigree copies
-the member map `n` times: unnoticeable at tens of members, noticeable at
-hundreds. The likelihood functions are unaffected.
+the member map `n` times: 1.5 s for 1000 members, 23 s for 4000.
+`pedigree.pedigreeOf(name, people)` builds in one pass (4000 members in
+0.05 s) with the same checks.
 
 ### The mixture LR enumerates genotypes
 
 `mixture.j` sums over every genotype combination of the unknowns: about
-`(k(k+1)/2)^u / u!` terms for `k` allele classes. Measured, one locus, Hd
-with `u` unknowns, θ = 0.01: 6 alleles, `u = 2`, 0.04 s; 10 alleles,
-`u = 2`, 0.15 s; 6 alleles, `u = 3`, 0.3 s; 8 alleles, `u = 3`, 1.2 s;
-10 alleles, `u = 3`, 4.0 s. `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10)
-make larger cases throw.
+`(k(k+1)/2)^u / u!` terms for `k` allele classes, 35-45 µs each. Measured
+(`jennifer` 0.25.0-dev+43), one locus, Hd with `u` unknowns, θ = 0.01:
+6 alleles, `u = 2`, 0.01 s; 10 alleles, `u = 2`, 0.1 s; 6 alleles, `u = 3`,
+0.16 s; 8 alleles, `u = 3`, 0.7 s; 10 alleles, `u = 3`, 2.3 s. `locusLR`
+evaluates both hypotheses: Hp (one known plus 3 unknowns) and Hd (3 unknowns)
+at 10 alleles take 4.3 s per locus. A 24-locus three-person stain, six alleles
+per locus, Hp suspect plus 2 unknowns against Hd 3 unknowns, takes 3.7 s
+(107184 combinations). `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10) make
+larger loci throw; `MAX_COMBINATIONS` (250000, about 11 s) caps a
+whole-mixture call, checked up front. Score larger mixtures in groups of
+loci (`restrictMixture`) and multiply the results.
 
 ### The permutation HWE test is linear in sample size times permutations
 
 `hwePermutationTest` costs about 7 µs per person per permutation: 500 people
 at 1000 permutations take 3.8 s, so `DEFAULT_PERMUTATIONS` (10000) takes about
 40 s. Lower the count for screening and raise it for the loci near the
-threshold.
+threshold. The LD tests cost about 5 µs per pair, person and permutation:
+`ldPermutationTests` on 24 loci (276 pairs) of 2000 people takes about 1 min
+at 20 permutations and about 8 h at the default. Memory is
+linear in sample size whatever the number of alleles or genotype classes:
+count tables up to 65536 cells (256 alleles, or 256 x 256 genotype classes)
+are indexed directly, larger ones hashed into at least `2n` slots.
 
 ### The posterior bound is Monte Carlo
 
 `reporting.log10RmpQuantiles` draws two or three gamma deviates per locus per
-draw, about 25 µs each on the default binary: 10,000 draws over 20 loci take
-roughly 15 s. Its answer carries Monte Carlo error, about
+draw, about 16 µs each on the default binary: 10,000 draws over 24 loci take
+about 12 s. Its answer carries Monte Carlo error, about
 `sqrt(q (1 - q) / draws)` on the probability scale; fix the seed to reproduce
 it.
+
 ### Mutation matrices are rebuilt per locus and call
 
 Every `mutation.paternityIndexAt` / `duoPaternityIndexAt` builds its
-matrices over the locus's whole allele table: `O(n²)` per model, and `O(n³)`
-with PM (a linear solve). A 60-allele locus with two PM models takes about
-0.3 s; ordinary tables a few milliseconds per locus.
+matrices over the locus's whole allele table: `O(n²)` per model interpreted,
+plus an `O(n³)` `linalg.solve` with PM. One PM model at a 120-allele locus
+takes about 0.19 s, at 200 alleles 0.47 s; a 24-locus trio with 30 alleles
+per locus and a PM paternal model 0.47 s. Nothing is cached across calls, so
+a batch of alleged fathers rebuilds every matrix.
+`mutation.MAX_STATIONARY_ALLELES` (200) caps the detectable alleles under PM.
 
 ### Database search cost
 
-Measured on 5000 synthetic profiles x 24 loci, query typed at all 24
-(`jennifer` 0.25.0-dev): `search.search` 1.7 s, `search.familialSearch`
-0.85 s, both linear in the database size (1000 profiles: 0.34 s / 0.22 s).
+Measured on 5000 synthetic profiles x 24 loci, 20 alleles per locus, query
+typed at all 24, `FULL_SIBLINGS` (`jennifer` 0.25.0-dev+43): `search.search`
+1.55 s, `search.familialSearch` 1.6 s, both linear in the database size.
 `familialSearch` memoises `kinship.kinshipLRAt` per locus and candidate
-genotype; calling `kinship.kinshipLR` per candidate took 34 s for the same
-run. On `jennifer-tiny` the cost grows faster than linearly (1000: 0.8 s /
-0.7 s; 5000: 13.7 s / 11.0 s): every allocation pays for garbage collection
-over the live database. Building the 5000 profiles took 2.4 s (tiny 4.1 s).
-
-### Search verdicts are counting rules
-
-`search.search` classes candidates by counts of identical, drop-out and
-mismatching loci against thresholds the caller sets. It does not weigh rare
-against common alleles, model drop-in, or treat a mismatch at a high-mutation
-locus differently. Report a candidate with an RMP or LR over its loci.
-Drop-out is recognised only as a query homozygote against a candidate
-heterozygote carrying that allele.
-
-### Familial search ranks, it does not identify
-
-`search.familialSearch` uses `kinship.kinshipLR` (theta 0). In a large
-database unrelated people reach high LRs by chance, so the ranking is a
-shortlist; half siblings, grandparents and avuncular relatives are
-indistinguishable. In `examples/search.j` a planted full sibling typed at
-eight loci ranks 19th of 200. There is no `log10` variant: a scored LR that
-overflows a float raises a runtime error.
-
-### Built-in panels cover a fixed list of kits
-
-`panels.j` ships eleven panels whose locus lists are documented by the
-manufacturer or the standard; other kits need `panels.customPanel`.
-`normalizeLocus` knows the aliases listed in [panels](../reference/panels.md)
-and passes any other name through unchanged.
-
-### Long panels underflow
-
-`randomMatchProbability` and `pedigreeLikelihood` return plain products. Use
-`log10RandomMatchProbability`, `log10PedigreeLikelihood`, or `pedigreeLR`,
-which takes the ratio locus by locus. `mixture.mixtureLR` multiplies locus
-LRs; `mixture.log10MixtureLR` sums their logarithms.
+genotype, passing a one-locus table; calling `kinship.kinshipLR` per
+candidate took 34 s. On `jennifer-tiny` the same run takes 6.2 s / 2.5 s, and
+the cost grows faster than linearly: every allocation pays for garbage
+collection over the live database. Both functions rank with `lists.sort` on
+plain keys rather than `lists.sortBy`: a function that passes a callback
+anywhere in its call tree deep-copies every compound parameter bound from a
+top-level variable, which copied the whole database (64 MiB at 2000 x 24) per
+call and cost `search` 25.5 s on tiny at 5000.
 
 ## Reporting
 

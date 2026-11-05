@@ -103,8 +103,10 @@ runs this case.
 
 ## Errors
 
-Invalid input throws; nothing returns a quiet wrong answer. Each module has its
-own `kind`: `"forensicgenetics"`, `"kinship"`, `"pedigree"`, `"lineage"`.
+Invalid input throws; no function returns a silently wrong answer. Each module
+throws its own `kind`, the module's name: `"forensicgenetics"`, `"kinship"`,
+`"pedigree"`, `"lineage"`, `"mixture"`, `"popstats"`, `"panels"`, `"search"`,
+`"xstr"`, `"reporting"`, `"mutation"`.
 
 ```jennifer
 try {

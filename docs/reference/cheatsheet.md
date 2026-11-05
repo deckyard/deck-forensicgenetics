@@ -32,7 +32,7 @@ this page against the code.
 | Function | Returns | Does |
 |---|---|---|
 | `forensicgenetics.alleleValue(allele)` | `float` | Repeat count of an allele label; throws if not numeric. |
-| `forensicgenetics.isNumericAllele(allele)` | `bool` | Whether the label is digits with at most one `.`. |
+| `forensicgenetics.isNumericAllele(allele)` | `bool` | Whether the label is digits with at most one `.`, within the float range. |
 | `forensicgenetics.db(name)` | `FrequencyDb` | Empty database. |
 | `forensicgenetics.withLocus(fdb, locus, n, freqs)` | `FrequencyDb` | Copy with one locus added or replaced; validates the table. |
 | `forensicgenetics.combineFrequencies(dbs, name)` | `FrequencyDb` | Tables pooled by allele counts over their shared loci. |
@@ -54,7 +54,7 @@ this page against the code.
 | `forensicgenetics.genotypeFrequency(fdb, g, theta)` | `float` | NRC II rec. 4.2 genotype frequency, capped at 1. |
 | `forensicgenetics.randomMatchProbability(fdb, p, theta)` | `float` | RMP: product of `genotypeFrequency` over the profile. |
 | `forensicgenetics.log10RandomMatchProbability(fdb, p, theta)` | `float` | `log10` RMP, summed per locus. |
-| `forensicgenetics.matchLikelihoodRatio(fdb, p, theta)` | `float` | `1 / RMP`. |
+| `forensicgenetics.matchLikelihoodRatio(fdb, p, theta)` | `float` | `1 / RMP`; throws for an RMP below `1e-308`. |
 | `forensicgenetics.randomMatchProbabilityAcross(dbs, weights, p, theta)` | `float` | `Σ w_i · RMP_i` over candidate populations. |
 | `forensicgenetics.matchLikelihoodRatioAcross(dbs, weights, p, theta)` | `float` | `1 / randomMatchProbabilityAcross`. |
 | `forensicgenetics.mixture(id, observed)` | `Mixture` | Mixture; repeated alleles collapse. |
@@ -134,6 +134,8 @@ The alleles seen at each locus of a mixed stain.
 | `kinship.pairLoci(db, a, b)` | `list of string` | Loci both profiles and the table share, in `a`'s order. |
 | `kinship.kinshipLR(a, b, rel, db)` | `float` | LR of `rel` against `UNRELATED` over `pairLoci`. |
 | `kinship.kinshipLRAgainst(a, b, rel, alt, db)` | `float` | LR of `rel` against `alt` over `pairLoci`. |
+| `kinship.log10KinshipLR(a, b, rel, db)` | `float` | `log10` of `kinshipLR`, summed per locus; throws on an exclusion. |
+| `kinship.log10KinshipLRAgainst(a, b, rel, alt, db)` | `float` | `log10` of `kinshipLRAgainst`, summed per locus. |
 | `kinship.paternityIndexAt(db, mother, child, father, model)` | `float` | One-locus PI, `X / Y`. |
 | `kinship.trioLoci(db, mother, child, father)` | `list of string` | Loci all three and the table share, in the child's order. |
 | `kinship.paternityIndex(mother, child, allegedFather, db)` | `float` | CPI under `DEFAULT_MUTATION`. |
@@ -145,6 +147,8 @@ The alleles seen at each locus of a mixed stain.
 | `kinship.kinshipLRAtTheta(db, ga, gb, rel, alt, theta)` | `float` | One-locus LR with theta; equals `kinshipLRAt` at 0. |
 | `kinship.kinshipLRTheta(a, b, rel, db, theta)` | `float` | `kinshipLR` with theta. |
 | `kinship.kinshipLRAgainstTheta(a, b, rel, alt, db, theta)` | `float` | `kinshipLRAgainst` with theta. |
+| `kinship.log10KinshipLRTheta(a, b, rel, db, theta)` | `float` | `log10` of `kinshipLRTheta`, summed per locus. |
+| `kinship.log10KinshipLRAgainstTheta(a, b, rel, alt, db, theta)` | `float` | `log10` of `kinshipLRAgainstTheta`, summed per locus. |
 | `kinship.paternityIndexAtTheta(db, mother, child, father, model, theta)` | `float` | One-locus trio PI; `Y` draws given the mother's and father's alleles. |
 | `kinship.paternityIndexTheta(mother, child, allegedFather, db, theta)` | `float` | Trio CPI with theta under `DEFAULT_MUTATION`. |
 | `kinship.paternityIndexWithTheta(mother, child, allegedFather, db, model, theta)` | `float` | Trio CPI with theta under `model`. |
@@ -206,13 +210,14 @@ A stepwise STR mutation model. A `k`-step change in one direction has probabilit
 | `lineage.yLoci(h)` | `list of string` | Locus names, insertion order. |
 | `lineage.ySharedLoci(a, b)` | `list of string` | Shared loci, in `a`'s order. |
 | `lineage.yMatches(a, b)` | `bool` | Exact at every shared locus. |
-| `lineage.yStepDistance(a, b)` | `float` | Summed repeat differences over shared loci. |
-| `lineage.yMatchesWithin(a, b, steps)` | `bool` | `yStepDistance <= steps`. |
+| `lineage.yStepDistance(a, b)` | `float` | Summed repeat differences over shared loci, exact. |
+| `lineage.yMatchesWithin(a, b, steps)` | `bool` | `yStepDistance <= steps`; false where it would throw. |
 
 | Constant | Type | Value | Means |
 |---|---|---|---|
 | `lineage.DEFAULT_CONFIDENCE` | `float` | `0.95` | One-sided level of `lineageMatchProbability`. |
 | `lineage.MAX_ALIGN_LENGTH` | `int` | `5000` | Longest sequence `align` accepts, in bases. |
+| `lineage.MAX_ALIGN_CELLS` | `int` | `1250000` | Most cells one band pass of `align` may fill. |
 
 ### `lineage.Difference`
 
@@ -251,7 +256,7 @@ A repeat count per locus; multi-copy loci as `"11,14"` or `"11/14"`.
 | `mixture.hypothesis(name, known, knownDropout, unknowns, unknownDropout)` | `Hypothesis` | Validated hypothesis: known contributors with their drop-out, `unknowns` sharing one drop-out. |
 | `mixture.conditioningProfiles(hp, hd)` | `list of forensics.Profile` | Known contributors of both hypotheses, deduplicated; the θ conditioning set. |
 | `mixture.minimumContributors(m)` | `int` | `ceil(max alleles at a locus / 2)`. |
-| `mixture.restrictMixture(m, keep)` | `forensics.Mixture` | Copy keeping only the named loci. |
+| `mixture.restrictMixture(m, keep)` | `Mixture` | Copy keeping only the named loci. |
 | `mixture.evidenceProbability(fdb, m, locus, h, typed, dropIn, theta)` | `float` | Probability of the evidence under `h` at one locus, θ conditioned on `typed`. |
 | `mixture.locusLR(fdb, m, locus, hp, hd, dropIn, theta)` | `float` | LR of `hp` against `hd` at one locus. |
 | `mixture.locusLRs(fdb, m, hp, hd, dropIn, theta)` | `map of string to float` | `locusLR` at every locus of the mixture. |
@@ -262,6 +267,7 @@ A repeat count per locus; multi-copy loci as `"11,14"` or `"11/14"`.
 |---|---|---|---|
 | `mixture.MAX_UNKNOWNS` | `int` | `3` | Most unknown contributors per hypothesis. |
 | `mixture.MAX_LOCUS_ALLELES` | `int` | `10` | Most distinct alleles (stain plus typed profiles) per locus. |
+| `mixture.MAX_COMBINATIONS` | `int` | `250000` | Most unknowns' genotype combinations per `locusLRs` / `mixtureLR` / `log10MixtureLR` call, all loci and both hypotheses. |
 
 ### `mixture.Hypothesis`
 
@@ -282,6 +288,7 @@ Who contributed to the stain, under one hypothesis. Build with `hypothesis`.
 | `pedigree.pedigree(name)` | `Pedigree` | Empty pedigree. |
 | `pedigree.withFounder(ped, id, sex)` | `Pedigree` | Copy with a founder added. |
 | `pedigree.withChild(ped, id, sex, father, mother)` | `Pedigree` | Copy with a child of `father` and `mother`. |
+| `pedigree.pedigreeOf(name, people)` | `Pedigree` | Pedigree from a `list of Person` in one pass, checked as the two above. |
 | `pedigree.members(ped)` | `list of string` | Member ids, insertion order. |
 | `pedigree.hasMember(ped, id)` | `bool` | Whether the id is a member. |
 | `pedigree.personOf(ped, id)` | `Person` | The member; throws if absent. |
@@ -293,8 +300,13 @@ Who contributed to the stain, under one hypothesis. Build with `hypothesis`.
 | `pedigree.pedigreeLoci(ped, profiles, db)` | `list of string` | Loci the table covers and a member is typed at. |
 | `pedigree.pedigreeLikelihood(ped, profiles, db)` | `float` | Product of `locusLikelihood` over `pedigreeLoci`. |
 | `pedigree.log10PedigreeLikelihood(ped, profiles, db)` | `float` | `log10` likelihood, summed per locus. |
-| `pedigree.pedigreeLR(numerator, denominator, profiles, db)` | `float` | LR of two pedigrees, locus by locus. |
+| `pedigree.pedigreeLR(numerator, denominator, profiles, db)` | `float` | LR of two pedigrees, locus by locus; throws past the float range. |
+| `pedigree.log10PedigreeLR(numerator, denominator, profiles, db)` | `float` | `log10` of `pedigreeLR`, summed per locus; throws on an exclusion. |
 | `pedigree.typedMembers(ped, profiles)` | `list of string` | Members with a non-empty profile. |
+
+| Constant | Type | Value | Means |
+|---|---|---|---|
+| `pedigree.MAX_PEDIGREE_ALLELES` | `int` | `20` | Most distinct alleles the typed members may show at one locus (lumped class excluded). |
 
 ### `pedigree.Person`
 
@@ -537,6 +549,7 @@ One candidate of a familial search.
 |---|---|---|---|
 | `xstr.MALE` | `string` | `"male"` | One X allele per locus. |
 | `xstr.FEMALE` | `string` | `"female"` | Two X alleles per locus. |
+| `xstr.MAX_GROUP_HETEROZYGOUS_LOCI` | `int` | `12` | Most heterozygous loci a female may have within one linkage group (`2^(h-1)` phases). |
 | `xstr.HAPLOTYPE_SEPARATOR` | `string` | `"-"` | Joins a haplotype key. |
 | `xstr.FATHER_DAUGHTER` | `XRelationship` | `XRelationship{name: "father-daughter", sexA: "male", sexB: "female", k0: 0.0, k1: 1.0, k2: 0.0}` | (0, 1, 0). |
 | `xstr.FATHER_SON` | `XRelationship` | `XRelationship{name: "father-son", sexA: "male", sexB: "male", k0: 1.0, k1: 0.0, k2: 0.0}` | (1, 0, 0): no X shared. |
@@ -605,7 +618,11 @@ The X-STR frequency model.
 | `reporting.sizeBiasGenotypeFrequency(fdb, g, theta)` | `float` | NRC II 4.2 at size-bias corrected frequencies. |
 | `reporting.sizeBiasRandomMatchProbability(fdb, p, theta)` | `float` | Product of `sizeBiasGenotypeFrequency` over the profile. |
 | `reporting.log10SizeBiasRandomMatchProbability(fdb, p, theta)` | `float` | Its log10, summed per locus. |
-| `reporting.sizeBiasLikelihoodRatio(fdb, p, theta)` | `float` | `1 / sizeBiasRandomMatchProbability`. |
+| `reporting.sizeBiasLikelihoodRatio(fdb, p, theta)` | `float` | `1 / sizeBiasRandomMatchProbability`; throws past `1e300`. |
+| `reporting.bayesianFrequency(fdb, locus, allele, prior)` | `float` | FSR-GUI-0012 11.4 posterior mean, `k` = listed alleles: `(x + 1)/(2N + k)`, `(x + 1/k)/(2N + 1)`, `(x + 1/(k + 2))/(2N + 1)`. |
+| `reporting.bayesianRandomMatchProbability(fdb, p, theta, prior)` | `float` | NRC II 4.2 at `bayesianFrequency` values, product over the profile. |
+| `reporting.log10BayesianRandomMatchProbability(fdb, p, theta, prior)` | `float` | Its log10, summed per locus. |
+| `reporting.bayesianLikelihoodRatio(fdb, p, theta, prior)` | `float` | `1 / bayesianRandomMatchProbability`; throws past `1e300`. |
 | `reporting.log10RmpQuantiles(fdb, p, theta, prior, quantiles, draws, seed)` | `list of float` | Posterior quantiles of log10 RMP under per-locus Dirichlet frequencies; seeded Monte Carlo. |
 | `reporting.likelihoodRatioLowerBound(fdb, p, theta, prior, level, draws, seed)` | `float` | `1 / RMP` at the `level` posterior quantile of the RMP. |
 | `reporting.verbalEquivalent(lr)` | `VerbalEquivalent` | ENFSI (2015) verbal band, wording and bounds; `lr > 0`. |
@@ -614,7 +631,8 @@ The X-STR frequency model.
 | Constant | Type | Value | Means |
 |---|---|---|---|
 | `reporting.PRIOR_UNIFORM` | `int` | `1` | Dirichlet prior `α = 1` per allele. |
-| `reporting.PRIOR_ONE_OVER_K` | `int` | `2` | Dirichlet prior `α = 1/k` per allele. |
+| `reporting.PRIOR_ONE_OVER_K` | `int` | `2` | Dirichlet prior `α = 1/k` per allele; posterior `k` = listed + unlisted profile alleles, `bayesianFrequency`'s `k` = listed (FSR 11.4.1). |
+| `reporting.PRIOR_ONE_OVER_K_PLUS_TWO` | `int` | `3` | Dirichlet prior `α = 1/(k + 2)`, `k` = listed alleles, two unobserved slots (FSR 11.4.2). |
 | `reporting.DEFAULT_DRAWS` | `int` | `10000` | Simulation size; quantile SE about `sqrt(q (1 - q) / draws)`. |
 | `reporting.MAX_DRAWS` | `int` | `1000000` | Largest simulation size accepted. |
 | `reporting.SUPPORTS_FIRST` | `string` | `"first"` | LR above 1. |
@@ -659,6 +677,7 @@ A likelihood ratio's band on the ENFSI (2015) scale; bounds on the LR scale.
 | `mutation.duoPaternityIndex(child, allegedFather, db, model, theta)` | `float` | Duo CPI over the loci both carry. |
 | `mutation.kinshipLRAt(db, ga, gb, rel, alt, silent, theta)` | `float` | One-locus kinship LR with a silent allele. |
 | `mutation.kinshipLR(a, b, rel, alt, db, silent, theta)` | `float` | Kinship LR with per-locus silent frequencies. |
+| `mutation.log10KinshipLR(a, b, rel, alt, db, silent, theta)` | `float` | `log10` of `kinshipLR`, summed per locus; throws on an exclusion. |
 | `mutation.aabb2003Counts()` | `list of MutationCount` | AABB 2003 mutation counts at 18 loci (STRBase). |
 | `mutation.aabb2003Rates(which)` | `map of string to float` | Rates from those counts: `"total"`, `"paternal"` or `"maternal"`. |
 | `mutation.kinshipModelWithRates(model, rates)` | `MutationModel` | A `kinship.MutationModel` with per-locus rates. |
@@ -669,6 +688,7 @@ A likelihood ratio's band on the ENFSI (2015) scale; bounds on the LR scale.
 | `mutation.MODEL_EQUAL` | `string` | `"equal"` | Equal model. |
 | `mutation.MODEL_PROPORTIONAL` | `string` | `"proportional"` | Proportional model. |
 | `mutation.MODEL_STEPWISE` | `string` | `"stepwise"` | Stepwise and extended stepwise. |
+| `mutation.MAX_STATIONARY_ALLELES` | `int` | `200` | Most detectable alleles at a locus under PM. |
 | `mutation.NO_MUTATION` | `MutationSpec` | `MutationSpec{model: "equal", rate: 0.0, range: 1.0, rate2: 0.0, stationary: false, perLocus: {}}` | The identity matrix. |
 | `mutation.MENDELIAN` | `ParentageModel` | `ParentageModel{paternal: NO_MUTATION, maternal: NO_MUTATION, silent: {}}` | No mutation, no silent allele. |
 
