@@ -102,6 +102,12 @@ def cpi as float init kinship.paternityIndexWith($mother, $child,
     $allegedFather, $db, $model);
 ```
 
+Published per-locus rates (AABB 2003, via NIST STRBase), Familias' Equal,
+Proportional and Extended stepwise models, a maternal model and silent
+alleles are in [Mutation models and silent alleles](mutation-models.md).
+`mutation.kinshipModelWithRates` puts the published rates into a
+`kinship.MutationModel`.
+
 ## Worked example
 
 `examples/paternity.j`. The alleged father is 16/16 at D8S1179 and the child
@@ -126,11 +132,66 @@ strict Mendelian CPI  = 0.000000
 CPI with mutation     = 460.77
 W (prior 0.5)         = 0.99783441
 W (prior 0.1)         = 0.98084163
+
+theta  trio CPI  duo PI
+0.00     460.77    1.89
+0.01     345.16    1.31
+0.03     214.83    0.71
 ```
 
 Each consistent locus loses about 0.1% to the `(1 - rate)` factor. The
 inconsistent locus contributes 0.0219 instead of 0. The prior moves `W` from
 99.78% to 98.08% on the same evidence.
+At `θ = 0.03` the trio CPI falls by half. The duo index is far smaller:
+without the mother, either of the child's alleles may be paternal, and
+D8S1179 still needs a mutation.
+
+## With theta
+
+```jennifer
+def cpi as float init kinship.paternityIndexTheta($mother, $child, $allegedFather,
+    $db, forensicgenetics.THETA_GENERAL);
+def cpi2 as float init kinship.paternityIndexWithTheta($mother, $child,
+    $allegedFather, $db, $model, 0.01);
+kinship.paternityIndexAtTheta($db, $motherGt, $childGt, $fatherGt, $model, 0.01);
+```
+
+`X` is unchanged: under paternity the child's paternal allele is the alleged
+father's, transmitted with the mutation model, and no population draw is
+involved. In `Y` the random man's allele `c` comes from the same
+sub-population as the typed mother and alleged father, so it is drawn given
+their four alleles:
+
+```
+F(c) = (m θ + (1-θ) pc) / (1 + 3θ)      m = copies of c among the mother's and alleged father's alleles
+```
+
+(Balding & Nichols 1995; Buckleton et al. 2016, ch. 11.) Mother, child and
+alleged father all `aa` give `(1 + 3θ) / (4θ + (1-θ) pa)`. Theta and the
+mutation model combine without interaction: one acts only on `X`, the other
+only on `Y`. At `theta = 0` each function returns exactly its theta-0
+counterpart. The random man is assumed not to mutate, as in the theta-0 index.
+
+## Duos
+
+When the mother is not typed, the duo index weighs the alleged father and
+child alone:
+
+```jennifer
+def pi as float init kinship.duoPaternityIndex($child, $allegedFather, $db,
+    kinship.DEFAULT_MUTATION, 0.01);
+kinship.duoPaternityIndexAt($db, $childGt, $fatherGt, kinship.NO_MUTATION, 0.0);
+```
+
+`X` takes one of the child's alleles from the alleged father (with mutation)
+and draws the other from the population given his two; `Y` draws both given
+his two and then the first. With `NO_MUTATION` it equals
+`kinshipLRTheta(child, father, PARENT_CHILD, db, theta)`; theta 0 is allowed
+and gives the product-rule duo index. It multiplies over the loci both carry,
+with the same rule for uncovered loci as the trio. A duo has no maternal
+exclusion; it carries less information than a trio, so prefer the trio
+whenever the mother is typed. Formulae in
+[Formulae and sources](../project/formulae.md#kinship-and-paternity-with-theta).
 
 When the alleged father cannot be typed, the case goes through his relatives:
 see [General pedigrees](pedigrees.md).

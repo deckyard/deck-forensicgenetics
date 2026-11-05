@@ -111,3 +111,14 @@ io.printf("W (prior 0.1)         = %f|prec=8\n", kinship.probabilityOfPaternityP
 io.printf(
     "\nfor contrast, child vs alleged father as full siblings: LR = %f|prec=4\n",
     kinship.kinshipLR($child, $alleged, kinship.FULL_SIBLINGS, $db));
+
+# Sub-population correction: Y draws the random man's allele given the typed
+# mother's and alleged father's alleles. The duo index drops the mother.
+io.printf("\ntheta  trio CPI  duo PI\n");
+for (def theta in [forensics.THETA_NONE, forensics.THETA_GENERAL, forensics.THETA_ISOLATED]) {
+    io.printf(
+        "%f|prec=2   %f|pad=8|prec=2  %f|pad=6|prec=2\n",
+        $theta,
+        kinship.paternityIndexTheta($mother, $child, $alleged, $db, $theta),
+        kinship.duoPaternityIndex($child, $alleged, $db, kinship.DEFAULT_MUTATION, $theta));
+}

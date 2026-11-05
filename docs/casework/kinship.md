@@ -46,7 +46,8 @@ P(Ga, Gb) = k0 · P(Ga) P(Gb) + k1 · T1(Ga, Gb) + k2 · [Ga == Gb] · P(Ga)
 `T1` is the probability with one of B's alleles a copy of one of A's and the
 other drawn from the population; its definition is in
 [Formulae and sources](../project/formulae.md#kinship-joint-genotype-probability).
-`P(G)` is the Hardy-Weinberg frequency at `θ = 0`.
+`P(G)` is the Hardy-Weinberg frequency at `θ = 0`; for theta see
+[With theta](#with-theta).
 
 ```jennifer
 kinship.jointGenotypeProbability($db, $ga, $gb, kinship.FULL_SIBLINGS);
@@ -94,9 +95,46 @@ A parent and child must share an allele at every locus, so one locus with none
 shared makes the parent/child LR zero. Full siblings need not share, so the
 same locus only counts against them.
 
+## With theta
+
+Each kinship function has a `...Theta` variant taking the co-ancestry
+coefficient last:
+
+```jennifer
+def lr as float init kinship.kinshipLRTheta($a, $b, kinship.FULL_SIBLINGS, $db, 0.01);
+def lr2 as float init kinship.kinshipLRAgainstTheta($a, $b,
+    kinship.FULL_SIBLINGS, kinship.HALF_SIBLINGS, $db, 0.01);
+kinship.kinshipLRAtTheta($db, $ga, $gb, $rel, $alt, 0.01);
+kinship.jointGenotypeProbabilityTheta($db, $ga, $gb, $rel, 0.01);
+```
+
+Every allele not identical by descent is drawn from one sub-population by
+the Balding-Nichols sampling formula: four draws under IBD 0, three under
+IBD 1, two under IBD 2 (formulae in
+[Formulae and sources](../project/formulae.md#kinship-and-paternity-with-theta)).
+This is not the theta-0 formula with the NRC II match probability put in for
+`P(G)`, which would leave the IBD-1 term on the product rule. At
+`theta = 0` each variant returns exactly the original's value. Theta must be
+in `[0, 1)`.
+
+Closed forms with theta, `u = θ + (1-θ) pa`, `v = θ + (1-θ) pb`; the test
+suite checks each at `θ = 0.1`:
+
+| Case | LR against unrelated |
+| --- | --- |
+| parent/child, both `aa` | `(1 + 2θ) / (3θ + (1-θ) pa)` |
+| parent/child, both `ab` | `(1 + 2θ)(u + v) / (4 u v)` |
+| parent/child, `ab` and `ac` | `(1 + 2θ) / (4 u)` |
+| identical, genotype `g` | `1 / genotypeFrequency(g, θ)` |
+| full sibs | `1/4 + 1/2 · LR(parent/child) + 1/4 · LR(identical)` |
+
+With `p = 0.1` and `θ = 0.1`, two `aa` people give a parent/child LR of
+`1.2 / 0.39 = 3.08` (10 at `θ = 0`) and a full-sibling LR of 4.71 (30.25).
+
 ## Limits
 
-- `θ = 0` throughout; see [Theta](../concepts/theta.md).
+- The original functions use `θ = 0`; the `...Theta` variants apply the
+  correction. See [Theta](../concepts/theta.md).
 - Non-inbred pairs only. An inbred pedigree needs the nine condensed Jacquard
   coefficients.
 - A third person (the mother in a trio, a second sibling, an untyped link) adds
