@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for forensicgenetics.j. Run with `jennifer test forensicgenetics_test.j`.
 #
@@ -559,4 +559,85 @@ func testGenotypeRejectsEmptyLocus() {
 func testNonNumericOrderIsLexicographicEitherWay() {
     testing.assertEqual(genotype("AMEL", "X", "Y"), genotype("AMEL", "Y", "X"));
     testing.assertTrue(isHomozygous(genotype("AMEL", "X", "X")));
+}
+
+# --- review fixes -------------------------------------------------------------
+
+func testEqualRepeatCountsOrderTheSameEitherWay() {
+    # "15" and "15.0" are different labels with one repeat count: the order
+    # falls back to the labels ("15" < "15.0"), whatever the argument order.
+    testing.assertEqual(genotype("L", "15", "15.0"), genotype("L", "15.0", "15"));
+    testing.assertEqual(genotype("L", "15.0", "15").a, "15");
+    # 15.00000000000000001 rounds to the float 15.0 but is larger exactly.
+    testing.assertEqual(genotype("L", "15.00000000000000001", "15").a, "15");
+    testing.assertEqual(genotype("L", "15", "15.00000000000000001").a, "15");
+}
+
+func testANumericLabelPastTheFloatRangeIsNotARepeatCount() {
+    def huge as string init "1";
+    for (def i in 0..400) {
+        $huge = $huge + "0";
+    }
+    testing.assertFalse(isNumericAllele($huge));
+    testing.assertTrue(isNumericAllele("99999999999999999999"));
+    # Both labels are then ordered as text, either way round.
+    testing.assertEqual(genotype("L", $huge, "15"), genotype("L", "15", $huge));
+}
+
+func poolWithOneMissingSampleSize() {
+    combineFrequencies(
+        [
+            withLocus(db("A"), "L", 100, {"15": 1.0}),
+            withLocus(db("B"), "L", 0, {"16": 1.0})
+        ],
+        "AB");
+}
+
+func testPoolingNamesTheInputWithoutASampleSize() {
+    # Before the fix: "allele '16': frequency must be in (0, 1]".
+    testing.assertThrows("poolWithOneMissingSampleSize", "forensicgenetics");
+    def caught as string init "";
+    try {
+        poolWithOneMissingSampleSize();
+    } catch (e) {
+        $caught = $e.message;
+    }
+    testing.assertContains($caught, "database 1 ('B') has n = 0");
+}
+
+# subnormalProfile has 44 loci, each homozygous for an allele the table does
+# not list, so each scores the floor 5/20000 = .00025: genotype frequency
+# .00025^2 = 6.25e-8, RMP 6.25e-8^44 = 10^(44 * -7.2041199826559...) ~ 1e-317,
+# a subnormal whose reciprocal is past the float maximum.
+func subnormalDb() {
+    def out as FrequencyDb init db("t");
+    for (def i in 0..44) {
+        $out = withLocus($out, "L{$i}", 10000, {"10": 0.5});
+    }
+    return $out;
+}
+
+func subnormalProfile() {
+    def gs as list of Genotype init [];
+    for (def i in 0..44) {
+        $gs[] = genotype("L{$i}", "99", "99");
+    }
+    return profile("P", $gs);
+}
+
+func matchLrPastTheFloatRange() {
+    matchLikelihoodRatio(subnormalDb(), subnormalProfile(), THETA_NONE);
+}
+
+func matchLrAcrossPastTheFloatRange() {
+    matchLikelihoodRatioAcross([subnormalDb()], [1.0], subnormalProfile(), THETA_NONE);
+}
+
+func testAMatchLrPastTheFloatRangeThrowsItsOwnKind() {
+    # Before the fix: a runtime float-overflow error.
+    testing.assertThrows("matchLrPastTheFloatRange", "forensicgenetics");
+    testing.assertThrows("matchLrAcrossPastTheFloatRange", "forensicgenetics");
+    near(
+        log10RandomMatchProbability(subnormalDb(), subnormalProfile(), THETA_NONE) / 44.0,
+        2.0 * math.log10(0.00025));
 }

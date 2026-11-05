@@ -12,7 +12,9 @@ functions apply.
 ## Conventions
 
 - Allele labels are strings, compared verbatim. `genotype` orders a pair by
-  repeat count when both alleles are numeric, lexicographically otherwise.
+  repeat count (exact decimal comparison) when both alleles are numeric,
+  lexicographically otherwise and between labels of equal count (`"15"`
+  before `"15.0"`). A numeric label above the float maximum is not numeric.
 - Builders (`withLocus`, `withGenotype`) return a copy and leave the argument
   unchanged.
 - Loci and map keys keep insertion order; `commonLoci` follows profile order.
@@ -44,8 +46,10 @@ Background: [Profiles and genotypes](../concepts/profiles.md),
 - a theta outside `[0, 1)`
 - an empty profile; a mixture with no loci, or a locus with no alleles
 - a profile and mixture sharing no locus (`isIncluded`)
-- in `combineFrequencies`: an empty list, no shared locus, or a shared locus
-  with `n = 0` in every input
+- in `combineFrequencies`: an empty list, no shared locus, or an input with
+  `n = 0` at a shared locus (the message names the input's index)
 - in the `Across` functions: an empty list, a weight count that differs from
   the table count, a negative weight, or weights not summing to 1
-- a zero RMP in a likelihood-ratio function (only through underflow)
+- a zero RMP in a likelihood-ratio function (only through underflow), or an
+  RMP below `1e-308`, whose reciprocal exceeds the float range
+  (`-log10RandomMatchProbability` is the log10 LR)

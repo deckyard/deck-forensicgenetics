@@ -29,8 +29,10 @@ see [Kinship](kinship.md).
 
 ## Long panels
 
-Twenty loci give an RMP near 10⁻²⁵, which a float holds. Longer panels can
-underflow. `log10RandomMatchProbability` sums logarithms instead:
+Twenty loci give an RMP near 10⁻²⁵, well inside float range. The product
+underflows below about 1e-308, and `matchLikelihoodRatio` throws for an RMP
+below 1e-308. `log10RandomMatchProbability` sums per-locus logarithms and has
+no such limit:
 
 ```jennifer
 def logRmp as float init forensicgenetics.log10RandomMatchProbability($db, $p, $theta);
@@ -75,8 +77,8 @@ D16S539      11/12        0.025092
 log10 RMP = -14.792   ->  about 1 in 6.2 x 10^14
 ```
 
-No single locus is decisive; the answer is the product of eight ordinary
-frequencies.
+No locus is rare on its own; the RMP is the product of eight ordinary
+genotype frequencies.
 
 ## What to report with the number
 

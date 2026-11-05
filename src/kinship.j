@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Pairwise kinship likelihood ratios and trio paternity.
@@ -17,13 +17,12 @@
  * kinship LR is that probability under one relationship over the same under
  * another, multiplied across loci.
  *
- * The original functions use the plain product rule (theta = 0) and are
- * unchanged. Their `...Theta` variants apply the sub-population correction
- * properly: every allele that is not identical by descent is drawn by the
- * Balding-Nichols sampling formula, conditioned on the alleles already drawn,
- * so the IBD-0, IBD-1 and IBD-2 terms each draw four, three and two alleles.
- * Substituting the NRC II genotype frequency into the theta-0 form would not
- * do that. At theta 0 every `...Theta` variant returns exactly what the
+ * The original functions use the product rule (theta = 0). Their `...Theta`
+ * variants draw every allele not identical by descent by the Balding-Nichols
+ * sampling formula, conditioned on the alleles already drawn: four draws
+ * under IBD 0, three under IBD 1, two under IBD 2. Putting the NRC II
+ * genotype frequency into the theta-0 form instead would leave the IBD-1 term
+ * on the product rule. At theta 0 every `...Theta` variant returns exactly what the
  * original returns. `duoPaternityIndex` covers an alleged father and child
  * without the mother.
  *
@@ -44,6 +43,7 @@
 use math;
 use maps;
 use convert;
+use decimal;
 
 import "./forensicgenetics.j" as forensics;
 
@@ -169,6 +169,28 @@ func fail(msg as string) {
     throw Error{kind: "kinship", message: $msg, file: "", line: 0, col: 0};
 }
 
+# FLOAT_MAX is the largest finite float. The interpreter raises a runtime error
+# on a product past it, so the across-loci products check first.
+def const FLOAT_MAX as float init 1.7976931348623157e308;
+
+# timesLR multiplies one locus's factor into a running LR, throwing this
+# module's error where the product would leave the float range. `acc <= 1`
+# cannot overflow, and for `acc > 1` the quotient `FLOAT_MAX / acc` is finite.
+# The message is assembled only on failure.
+func timesLR(
+    acc as float,
+    factor as float,
+    what as string,
+    idA as string,
+    idB as string,
+    hint as string) {
+    if ($acc > 1.0 and $factor > FLOAT_MAX / $acc) {
+        fail("the " + $what + " of '" + $idA + "' and '" + $idB +
+            "' exceeds the float range (above 1.8e308)" + $hint);
+    }
+    return $acc * $factor;
+}
+
 # --- relationships ----------------------------------------------------------
 
 /**
@@ -272,12 +294,21 @@ export def const DEFAULT_MUTATION as MutationModel init MutationModel{
     perLocus: {}
 };
 
-# rateFor returns the mutation rate in force at a locus.
+# rateFor returns the mutation rate in force at a locus, checking it and the
+# decay: a `MutationModel` literal skips `mutationModel`'s checks, and a rate
+# past 1 made a transmission probability negative.
 func rateFor(model as MutationModel, locus as string) {
+    def rate as float init $model.rate;
     if (maps.has($model.perLocus, $locus)) {
-        return $model.perLocus[$locus];
+        $rate = $model.perLocus[$locus];
     }
-    return $model.rate;
+    if ($rate < 0.0 or $rate >= 1.0) {
+        fail("locus '" + $locus + "': mutation rate {$rate} must be in [0, 1)");
+    }
+    if ($model.decay < 0.0 or $model.decay >= 1.0) {
+        fail("mutation decay {$model.decay} must be in [0, 1)");
+    }
+    return $rate;
 }
 
 /**
@@ -285,14 +316,18 @@ func rateFor(model as MutationModel, locus as string) {
  *
  * `1 - rate` when they are equal, and `rate * (1 - decay) * decay^(k-1) / 2`
  * for a change of `k` repeat steps, `k` being the absolute difference in
- * repeat count rounded to the nearest integer and at least 1 (15 -> 15.2 is
- * one step). With a rate of 0 a change has probability 0.
+ * repeat count rounded to the nearest integer (halves up) and at least 1
+ * (15 -> 15.2 is one step). The difference is taken in exact decimal
+ * arithmetic on the labels, so `10.15 -> 10.65` is exactly half a step and
+ * rounds to 1; a difference too large for `decay^(k-1)` to be non-zero gives
+ * 0. With a rate of 0 a change has probability 0.
  * @param model {MutationModel} the mutation model
  * @param locus {string} the locus, for a per-locus rate
  * @param source {string} the parent's allele
  * @param target {string} the transmitted allele
  * @return {float} the transmission probability under mutation
- * @throws {Error} kind "kinship" if the rate is above 0 and either allele of a
+ * @throws {Error} kind "kinship" if the rate in force is outside [0, 1), the
+ *   decay is outside [0, 1), or the rate is above 0 and either allele of a
  *   change has no numeric repeat count
  */
 export func mutationProbability(
@@ -309,18 +344,30 @@ export func mutationProbability(
     }
     if (not forensics.isNumericAllele($source) or not forensics.isNumericAllele($target)) {
         fail("locus '" + $locus + "': cannot count mutation steps between '" + $source + "' and '" +
-            $target + "' - neither is a repeat count");
+            $target + "' - " + nonNumeric($source, $target) + " a repeat count");
     }
-    def va as float init forensics.alleleValue($source);
-    def vb as float init forensics.alleleValue($target);
-    def delta as float init math.abs($va - $vb);
-    def steps as int init math.round($delta);
-    if ($steps < 1) {
-        $steps = 1;
+    # Exact decimal difference of the labels, rounded half up. A float
+    # difference misplaces halves (10.65 - 10.15 is 0.5000000000000009), and
+    # math.round throws once the count leaves the int range; as a float, a
+    # count past 2^53 is still exact enough that decay^(k-1) is 0.
+    def delta as decimal.Decimal init decimal.abs(decimal.sub($source, $target));
+    def steps as float init decimal.toFloat(decimal.round($delta, 0, "half-up"));
+    if ($steps < 1.0) {
+        $steps = 1.0;
     }
-    def geometric as float init (1.0 - $model.decay) *
-        math.pow($model.decay, convert.toFloat($steps - 1));
+    def geometric as float init (1.0 - $model.decay) * math.pow($model.decay, $steps - 1.0);
     return $rate * $geometric / 2.0;
+}
+
+# nonNumeric names the labels of a pair that are not repeat counts.
+func nonNumeric(source as string, target as string) {
+    if (forensics.isNumericAllele($source)) {
+        return "'" + $target + "' is not";
+    }
+    if (forensics.isNumericAllele($target)) {
+        return "'" + $source + "' is not";
+    }
+    return "neither is";
 }
 
 # paternalTransmission is `transmissionProbability` with mutation folded in:
@@ -337,38 +384,140 @@ func paternalTransmission(
 
 # --- joint genotype probabilities -------------------------------------------
 
-# genotypeProbability is the plain Hardy-Weinberg genotype frequency (theta 0).
-func genotypeProbability(db as forensics.FrequencyDb, g as forensics.Genotype) {
-    return forensics.genotypeFrequency($db, $g, 0.0);
+# Freqs is the floored frequencies of the alleles one locus's calculation
+# reads, resolved once by `freqsOf`. A call into forensicgenetics.j rebuilds
+# every argument holding one of its structs, so `forensics.alleleFrequency`
+# costs the whole database per call (6.5 ms per 24-locus `kinshipLR`).
+def struct Freqs {
+    p as map of string to float
+};
+
+# freqsOf resolves the floored frequencies of `alleles` at `locus` without a
+# call into the core: `forensics.alleleFrequency`'s floor and cap, term for
+# term. An uncovered locus, or an unlisted allele with no floor, is passed to
+# `forensics.alleleFrequency` to throw the core's own error.
+func freqsOf(db as forensics.FrequencyDb, locus as string, alleles as list of string) {
+    if (not maps.has($db.loci, $locus)) {
+        forensics.alleleFrequency($db, $locus, $alleles[0]);
+    }
+    def n as int init $db.loci[$locus].n;
+    def floor as float init 0.0;
+    if ($n > 0) {
+        $floor = forensics.MIN_ALLELE_COUNT / (2.0 * convert.toFloat($n));
+    }
+    def out as Freqs init Freqs{p: {}};
+    for (def a in $alleles) {
+        def p as float init 0.0;
+        if (maps.has($db.loci[$locus].alleles, $a)) {
+            $p = $db.loci[$locus].alleles[$a];
+        }
+        if ($p < $floor) {
+            $p = $floor;
+        }
+        if ($p > 1.0) {
+            $p = 1.0;
+        }
+        if ($p <= 0.0) {
+            forensics.alleleFrequency($db, $locus, $a);
+        }
+        $out.p[$a] = $p;
+    }
+    return $out;
+}
+
+# pairFreqs is `freqsOf` over two genotypes' alleles.
+func pairFreqs(db as forensics.FrequencyDb, ga as forensics.Genotype, gb as forensics.Genotype) {
+    return freqsOf($db, $ga.locus, [$ga.a, $ga.b, $gb.a, $gb.b]);
+}
+
+# genotypeProbability is the plain Hardy-Weinberg genotype frequency (theta 0),
+# capped at 1: `forensics.genotypeFrequency` at theta 0, term for term.
+func genotypeProbability(f as Freqs, g as forensics.Genotype) {
+    def pa as float init $f.p[$g.a];
+    def out as float init 0.0;
+    if ($g.a == $g.b) {
+        $out = $pa * $pa;
+    } else {
+        $out = 2.0 * $pa * $f.p[$g.b];
+    }
+    if ($out > 1.0) {
+        return 1.0;
+    }
+    return $out;
 }
 
 # conditionalOnAllele is P(genotype `g` | one of its alleles is fixed at
 # `allele`, the other drawn from the population). Zero when `g` does not carry
 # `allele` at all.
-func conditionalOnAllele(db as forensics.FrequencyDb, g as forensics.Genotype, allele as string) {
+func conditionalOnAllele(f as Freqs, g as forensics.Genotype, allele as string) {
     if ($g.a == $g.b) {
         if ($g.a != $allele) {
             return 0.0;
         }
-        return forensics.alleleFrequency($db, $g.locus, $g.a);
+        return $f.p[$g.a];
     }
     if ($g.a == $allele) {
-        return forensics.alleleFrequency($db, $g.locus, $g.b);
+        return $f.p[$g.b];
     }
     if ($g.b == $allele) {
-        return forensics.alleleFrequency($db, $g.locus, $g.a);
+        return $f.p[$g.a];
     }
     return 0.0;
 }
 
-# ibdOneTerm is T1: the joint probability that A has genotype `ga` and B has
-# `gb` given they share exactly one allele identical by descent. The IBD allele
-# is one of A's two, each with probability 1/2; B's other allele comes from the
-# population.
-func ibdOneTerm(db as forensics.FrequencyDb, ga as forensics.Genotype, gb as forensics.Genotype) {
-    def shared as float init 0.5 * conditionalOnAllele($db, $gb, $ga.a) +
-        0.5 * conditionalOnAllele($db, $gb, $ga.b);
-    return genotypeProbability($db, $ga) * $shared;
+# Terms is one locus's joint-probability terms before the IBD weights, so a
+# ratio computes them once for both hypotheses. Theta 0: `pa`, `pb` are
+# P(Ga), P(Gb) (the IBD-0 term is their product); with theta, `none` is the
+# IBD-0 term. `one` is T1, `both` the IBD-2 term.
+def struct Terms {
+    pa as float,
+    pb as float,
+    none as float,
+    one as float,
+    both as float
+};
+
+# productTerms is `Terms` at theta 0. T1: the IBD allele is one of A's two,
+# each with probability 1/2; B's other allele comes from the population.
+func productTerms(f as Freqs, ga as forensics.Genotype, gb as forensics.Genotype) {
+    def pa as float init genotypeProbability($f, $ga);
+    def shared as float init 0.5 * conditionalOnAllele($f, $gb, $ga.a) +
+        0.5 * conditionalOnAllele($f, $gb, $ga.b);
+    def both as float init 0.0;
+    if (sameGenotype($ga, $gb)) {
+        $both = $pa;
+    }
+    return Terms{
+        pa: $pa,
+        pb: genotypeProbability($f, $gb),
+        none: 0.0,
+        one: $pa * $shared,
+        both: $both
+    };
+}
+
+# productJoint weights theta-0 terms by a relationship.
+func productJoint(t as Terms, rel as Relationship) {
+    return $rel.k0 * $t.pa * $t.pb + $rel.k1 * $t.one + $rel.k2 * $t.both;
+}
+
+# checkRelationship repeats `relationship`'s checks: a `Relationship` literal
+# skips them, and negative coefficients gave negative probabilities.
+func checkRelationship(rel as Relationship) {
+    if ($rel.k0 < 0.0 or $rel.k0 > 1.0 or $rel.k1 < 0.0 or $rel.k1 > 1.0 or $rel.k2 < 0.0 or
+        $rel.k2 > 1.0) {
+        fail("relationship '" + $rel.name + "': IBD coefficients must be in [0, 1]");
+    }
+    if (math.abs($rel.k0 + $rel.k1 + $rel.k2 - 1.0) > 0.000000001) {
+        fail("relationship '" + $rel.name + "': IBD coefficients must sum to 1");
+    }
+}
+
+# checkPair rejects genotypes at different loci.
+func checkPair(ga as forensics.Genotype, gb as forensics.Genotype) {
+    if ($ga.locus != $gb.locus) {
+        fail("cannot pair a genotype at '" + $ga.locus + "' with one at '" + $gb.locus + "'");
+    }
 }
 
 /**
@@ -379,23 +528,18 @@ func ibdOneTerm(db as forensics.FrequencyDb, ga as forensics.Genotype, gb as for
  * @param gb {Genotype} the other's, at the same locus
  * @param rel {Relationship} the assumed relationship
  * @return {float} the joint probability
- * @throws {Error} kind "kinship" if the two genotypes are at different loci,
- *   or kind "forensicgenetics" if the database does not cover the locus
+ * @throws {Error} kind "kinship" if the two genotypes are at different loci or
+ *   `rel` fails `relationship`'s checks, or kind "forensicgenetics" if the
+ *   database does not cover the locus
  */
 export func jointGenotypeProbability(
     db as forensics.FrequencyDb,
     ga as forensics.Genotype,
     gb as forensics.Genotype,
     rel as Relationship) {
-    if ($ga.locus != $gb.locus) {
-        fail("cannot pair a genotype at '" + $ga.locus + "' with one at '" + $gb.locus + "'");
-    }
-    def both as float init 0.0;
-    if (sameGenotype($ga, $gb)) {
-        $both = genotypeProbability($db, $ga);
-    }
-    return $rel.k0 * genotypeProbability($db, $ga) * genotypeProbability($db, $gb) +
-        $rel.k1 * ibdOneTerm($db, $ga, $gb) + $rel.k2 * $both;
+    checkPair($ga, $gb);
+    checkRelationship($rel);
+    return productJoint(productTerms(pairFreqs($db, $ga, $gb), $ga, $gb), $rel);
 }
 
 /**
@@ -406,8 +550,8 @@ export func jointGenotypeProbability(
  * @param rel {Relationship} the numerator hypothesis
  * @param alt {Relationship} the denominator hypothesis
  * @return {float} the likelihood ratio at this locus
- * @throws {Error} kind "kinship" on mismatched loci, or if `alt` gives the
- *   pair probability zero
+ * @throws {Error} kind "kinship" on mismatched loci, if `rel` or `alt` fails
+ *   `relationship`'s checks, or if `alt` gives the pair probability zero
  */
 export func kinshipLRAt(
     db as forensics.FrequencyDb,
@@ -415,12 +559,20 @@ export func kinshipLRAt(
     gb as forensics.Genotype,
     rel as Relationship,
     alt as Relationship) {
-    def under as float init jointGenotypeProbability($db, $ga, $gb, $alt);
+    checkPair($ga, $gb);
+    checkRelationship($alt);
+    checkRelationship($rel);
+    def t as Terms init productTerms(pairFreqs($db, $ga, $gb), $ga, $gb);
+    def under as float init productJoint($t, $alt);
     if ($under <= 0.0) {
-        fail("locus '" + $ga.locus + "': the alternative hypothesis '" + $alt.name +
-            "' gives these genotypes probability zero, so no ratio is defined");
+        failZero($ga.locus, $alt);
     }
-    return jointGenotypeProbability($db, $ga, $gb, $rel) / $under;
+    return productJoint($t, $rel) / $under;
+}
+
+func failZero(locus as string, alt as Relationship) {
+    fail("locus '" + $locus + "': the alternative hypothesis '" + $alt.name +
+        "' gives these genotypes probability zero, so no ratio is defined");
 }
 
 # sameGenotype compares two genotypes as unordered allele pairs. `genotype`
@@ -446,7 +598,7 @@ func commonLoci(a as forensics.Profile, b as forensics.Profile) {
 func sharedLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as forensics.Profile) {
     def out as list of string init [];
     for (def locus in commonLoci($a, $b)) {
-        if (forensics.hasLocus($db, $locus)) {
+        if (maps.has($db.loci, $locus)) {
             $out[] = $locus;
         }
     }
@@ -460,7 +612,7 @@ func sharedLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as forens
 # if the omission is deliberate, so it is a decision on record.
 func requireCovered(db as forensics.FrequencyDb, loci as list of string, who as string) {
     for (def locus in $loci) {
-        if (not forensics.hasLocus($db, $locus)) {
+        if (not maps.has($db.loci, $locus)) {
             fail($who + " are all typed at locus '" + $locus + "', which frequency database '" +
                 $db.name + "' does not cover; it will not be dropped silently - narrow the" +
                 " profiles with forensics.restrict if that is intended");
@@ -492,8 +644,9 @@ export func pairLoci(db as forensics.FrequencyDb, a as forensics.Profile, b as f
  * @param rel {Relationship} the relationship to test
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
- * @throws {Error} kind "kinship" if the profiles share no locus, or share one
- *   the database does not cover
+ * @throws {Error} kind "kinship" if the profiles share no locus, share one
+ *   the database does not cover, or if the LR exceeds the float range (use
+ *   `log10KinshipLR`)
  */
 export func kinshipLR(
     a as forensics.Profile,
@@ -513,8 +666,9 @@ export func kinshipLR(
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood ratio
  * @throws {Error} kind "kinship" if the profiles share no locus, share one the
- *   database does not cover, or if the alternative gives an observed pair
- *   probability zero
+ *   database does not cover, if the alternative gives an observed pair
+ *   probability zero, or if the LR exceeds the float range (use
+ *   `log10KinshipLRAgainst`)
  */
 export func kinshipLRAgainst(
     a as forensics.Profile,
@@ -529,9 +683,54 @@ export func kinshipLRAgainst(
     requireCovered($db, $loci, "profiles '" + $a.id + "' and '" + $b.id + "'");
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out * kinshipLRAt($db, $a.loci[$locus], $b.loci[$locus], $rel, $alt);
+        $out = timesLR(
+            $out,
+            kinshipLRAt($db, $a.loci[$locus], $b.loci[$locus], $rel, $alt),
+            "kinship LR",
+            $a.id,
+            $b.id,
+            "; use log10KinshipLR or log10KinshipLRAgainst");
     }
     return $out;
+}
+
+/**
+ * The base-10 logarithm of `kinshipLR`, summed per locus so it neither
+ * overflows nor underflows where the product would.
+ * @param a {Profile} one person's profile
+ * @param b {Profile} the other's
+ * @param rel {Relationship} the relationship to test
+ * @param db {FrequencyDb} the reference frequencies
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "kinship" as for `kinshipLR`, or if a locus has ratio 0
+ *   (an exclusion, which has no logarithm)
+ */
+export func log10KinshipLR(
+    a as forensics.Profile,
+    b as forensics.Profile,
+    rel as Relationship,
+    db as forensics.FrequencyDb) {
+    return log10KinshipLRAgainstTheta($a, $b, $rel, UNRELATED, $db, 0.0);
+}
+
+/**
+ * The base-10 logarithm of `kinshipLRAgainst`, summed per locus.
+ * @param a {Profile} one person's profile
+ * @param b {Profile} the other's
+ * @param rel {Relationship} the numerator hypothesis
+ * @param alt {Relationship} the denominator hypothesis
+ * @param db {FrequencyDb} the reference frequencies
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "kinship" as for `kinshipLRAgainst`, or if a locus has
+ *   ratio 0 (an exclusion, which has no logarithm)
+ */
+export func log10KinshipLRAgainst(
+    a as forensics.Profile,
+    b as forensics.Profile,
+    rel as Relationship,
+    alt as Relationship,
+    db as forensics.FrequencyDb) {
+    return log10KinshipLRAgainstTheta($a, $b, $rel, $alt, $db, 0.0);
 }
 
 # --- theta: the Balding-Nichols sampling formula ----------------------------
@@ -548,12 +747,7 @@ func checkTheta(theta as float) {
 # probability that the next allele drawn from the sub-population is `allele`,
 # given the alleles already drawn (`sampled`), `m` of which are `allele`:
 # (m theta + (1 - theta) p) / (1 + (n - 1) theta), n = len(sampled).
-func drawProbability(
-    db as forensics.FrequencyDb,
-    locus as string,
-    sampled as list of string,
-    allele as string,
-    theta as float) {
+func drawProbability(f as Freqs, sampled as list of string, allele as string, theta as float) {
     def m as int init 0;
     for (def s in $sampled) {
         if ($s == $allele) {
@@ -561,22 +755,18 @@ func drawProbability(
         }
     }
     def n as float init convert.toFloat(len($sampled));
-    def p as float init forensics.alleleFrequency($db, $locus, $allele);
+    def p as float init $f.p[$allele];
     return (convert.toFloat($m) * $theta + (1.0 - $theta) * $p) / (1.0 + ($n - 1.0) * $theta);
 }
 
 # sequenceProbability is the probability of drawing `alleles` from the
 # sub-population in exactly that order: the product of drawProbability over
 # each prefix.
-func sequenceProbability(
-    db as forensics.FrequencyDb,
-    locus as string,
-    alleles as list of string,
-    theta as float) {
+func sequenceProbability(f as Freqs, alleles as list of string, theta as float) {
     def out as float init 1.0;
     def seen as list of string init [];
     for (def a in $alleles) {
-        $out = $out * drawProbability($db, $locus, $seen, $a, $theta);
+        $out = $out * drawProbability($f, $seen, $a, $theta);
         $seen[] = $a;
     }
     return $out;
@@ -594,7 +784,7 @@ func orderings(g as forensics.Genotype) {
 # conditionalOnAlleleTheta is conditionalOnAllele with the free allele drawn by
 # the sampling formula given `sampled` (the other person's two alleles).
 func conditionalOnAlleleTheta(
-    db as forensics.FrequencyDb,
+    f as Freqs,
     g as forensics.Genotype,
     allele as string,
     sampled as list of string,
@@ -603,43 +793,41 @@ func conditionalOnAlleleTheta(
         if ($g.a != $allele) {
             return 0.0;
         }
-        return drawProbability($db, $g.locus, $sampled, $g.a, $theta);
+        return drawProbability($f, $sampled, $g.a, $theta);
     }
     if ($g.a == $allele) {
-        return drawProbability($db, $g.locus, $sampled, $g.b, $theta);
+        return drawProbability($f, $sampled, $g.b, $theta);
     }
     if ($g.b == $allele) {
-        return drawProbability($db, $g.locus, $sampled, $g.a, $theta);
+        return drawProbability($f, $sampled, $g.a, $theta);
     }
     return 0.0;
 }
 
-# jointTheta is the joint genotype probability with every allele that is not
-# identical by descent drawn from one sub-population by the sampling formula:
-# IBD 0 draws four alleles, IBD 1 three (B's IBD allele is a copy, not a
-# draw), IBD 2 two. At theta 0 it is the product-rule form term by term; the
-# exported functions still route theta 0 through that form so it stays
-# byte-identical.
-func jointTheta(
-    db as forensics.FrequencyDb,
-    ga as forensics.Genotype,
-    gb as forensics.Genotype,
-    rel as Relationship,
-    theta as float) {
-    def locus as string init $ga.locus;
+# thetaTerms is `Terms` with every allele that is not identical by descent
+# drawn from one sub-population by the sampling formula: IBD 0 draws four
+# alleles, IBD 1 three (B's IBD allele is a copy, not a draw), IBD 2 two. At
+# theta 0 it is the product-rule form term by term; the exported functions
+# still route theta 0 through that form so it stays byte-identical.
+func thetaTerms(f as Freqs, ga as forensics.Genotype, gb as forensics.Genotype, theta as float) {
     def sa as list of string init [$ga.a, $ga.b];
-    def pa as float init orderings($ga) * sequenceProbability($db, $locus, $sa, $theta);
+    def pa as float init orderings($ga) * sequenceProbability($f, $sa, $theta);
     def none as float init orderings($ga) *
         orderings($gb) *
-        sequenceProbability($db, $locus, [$ga.a, $ga.b, $gb.a, $gb.b], $theta);
+        sequenceProbability($f, [$ga.a, $ga.b, $gb.a, $gb.b], $theta);
     def one as float init $pa *
-        (0.5 * conditionalOnAlleleTheta($db, $gb, $ga.a, $sa, $theta) +
-        0.5 * conditionalOnAlleleTheta($db, $gb, $ga.b, $sa, $theta));
+        (0.5 * conditionalOnAlleleTheta($f, $gb, $ga.a, $sa, $theta) +
+        0.5 * conditionalOnAlleleTheta($f, $gb, $ga.b, $sa, $theta));
     def both as float init 0.0;
     if (sameGenotype($ga, $gb)) {
         $both = $pa;
     }
-    return $rel.k0 * $none + $rel.k1 * $one + $rel.k2 * $both;
+    return Terms{pa: $pa, pb: 0.0, none: $none, one: $one, both: $both};
+}
+
+# thetaJoint weights theta terms by a relationship.
+func thetaJoint(t as Terms, rel as Relationship) {
+    return $rel.k0 * $t.none + $rel.k1 * $t.one + $rel.k2 * $t.both;
 }
 
 /**
@@ -657,8 +845,9 @@ func jointTheta(
  * @param rel {Relationship} the assumed relationship
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the joint probability
- * @throws {Error} kind "kinship" on an out-of-range theta or mismatched loci,
- *   or kind "forensicgenetics" if the database does not cover the locus
+ * @throws {Error} kind "kinship" on an out-of-range theta, mismatched loci or
+ *   a `rel` failing `relationship`'s checks, or kind "forensicgenetics" if
+ *   the database does not cover the locus
  */
 export func jointGenotypeProbabilityTheta(
     db as forensics.FrequencyDb,
@@ -670,10 +859,9 @@ export func jointGenotypeProbabilityTheta(
     if ($theta == 0.0) {
         return jointGenotypeProbability($db, $ga, $gb, $rel);
     }
-    if ($ga.locus != $gb.locus) {
-        fail("cannot pair a genotype at '" + $ga.locus + "' with one at '" + $gb.locus + "'");
-    }
-    return jointTheta($db, $ga, $gb, $rel, $theta);
+    checkPair($ga, $gb);
+    checkRelationship($rel);
+    return thetaJoint(thetaTerms(pairFreqs($db, $ga, $gb), $ga, $gb, $theta), $rel);
 }
 
 /**
@@ -687,8 +875,9 @@ export func jointGenotypeProbabilityTheta(
  * @param alt {Relationship} the denominator hypothesis
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio at this locus
- * @throws {Error} kind "kinship" on an out-of-range theta, mismatched loci, or
- *   if `alt` gives the pair probability zero
+ * @throws {Error} kind "kinship" on an out-of-range theta, mismatched loci, a
+ *   `rel` or `alt` failing `relationship`'s checks, or if `alt` gives the pair
+ *   probability zero
  */
 export func kinshipLRAtTheta(
     db as forensics.FrequencyDb,
@@ -701,12 +890,15 @@ export func kinshipLRAtTheta(
     if ($theta == 0.0) {
         return kinshipLRAt($db, $ga, $gb, $rel, $alt);
     }
-    def under as float init jointGenotypeProbabilityTheta($db, $ga, $gb, $alt, $theta);
+    checkPair($ga, $gb);
+    checkRelationship($alt);
+    checkRelationship($rel);
+    def t as Terms init thetaTerms(pairFreqs($db, $ga, $gb), $ga, $gb, $theta);
+    def under as float init thetaJoint($t, $alt);
     if ($under <= 0.0) {
-        fail("locus '" + $ga.locus + "': the alternative hypothesis '" + $alt.name +
-            "' gives these genotypes probability zero, so no ratio is defined");
+        failZero($ga.locus, $alt);
     }
-    return jointGenotypeProbabilityTheta($db, $ga, $gb, $rel, $theta) / $under;
+    return thetaJoint($t, $rel) / $under;
 }
 
 /**
@@ -720,7 +912,8 @@ export func kinshipLRAtTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
  * @throws {Error} kind "kinship" on an out-of-range theta, if the profiles
- *   share no locus, or share one the database does not cover
+ *   share no locus, share one the database does not cover, or if the LR
+ *   exceeds the float range (use `log10KinshipLRTheta`)
  */
 export func kinshipLRTheta(
     a as forensics.Profile,
@@ -743,8 +936,9 @@ export func kinshipLRTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
  * @throws {Error} kind "kinship" on an out-of-range theta, if the profiles
- *   share no locus, share one the database does not cover, or if the
- *   alternative gives an observed pair probability zero
+ *   share no locus, share one the database does not cover, if the
+ *   alternative gives an observed pair probability zero, or if the LR exceeds
+ *   the float range (use `log10KinshipLRAgainstTheta`)
  */
 export func kinshipLRAgainstTheta(
     a as forensics.Profile,
@@ -764,7 +958,78 @@ export func kinshipLRAgainstTheta(
     requireCovered($db, $loci, "profiles '" + $a.id + "' and '" + $b.id + "'");
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out * kinshipLRAtTheta($db, $a.loci[$locus], $b.loci[$locus], $rel, $alt, $theta);
+        $out = timesLR(
+            $out,
+            kinshipLRAtTheta($db, $a.loci[$locus], $b.loci[$locus], $rel, $alt, $theta),
+            "kinship LR",
+            $a.id,
+            $b.id,
+            "; use log10KinshipLRTheta or log10KinshipLRAgainstTheta");
+    }
+    return $out;
+}
+
+/**
+ * The base-10 logarithm of `kinshipLRTheta`, summed per locus.
+ * @param a {Profile} one person's profile
+ * @param b {Profile} the other's
+ * @param rel {Relationship} the relationship to test
+ * @param db {FrequencyDb} the reference frequencies
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "kinship" as for `kinshipLRTheta`, or if a locus has
+ *   ratio 0 (an exclusion, which has no logarithm)
+ */
+export func log10KinshipLRTheta(
+    a as forensics.Profile,
+    b as forensics.Profile,
+    rel as Relationship,
+    db as forensics.FrequencyDb,
+    theta as float) {
+    return log10KinshipLRAgainstTheta($a, $b, $rel, UNRELATED, $db, $theta);
+}
+
+/**
+ * The base-10 logarithm of `kinshipLRAgainstTheta`: the sum over the shared
+ * loci of `log10(kinshipLRAtTheta)`. The other three `log10KinshipLR...`
+ * functions are this with `UNRELATED` and / or theta 0.
+ * @param a {Profile} one person's profile
+ * @param b {Profile} the other's
+ * @param rel {Relationship} the numerator hypothesis
+ * @param alt {Relationship} the denominator hypothesis
+ * @param db {FrequencyDb} the reference frequencies
+ * @param theta {float} the co-ancestry coefficient, in [0, 1)
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "kinship" as for `kinshipLRAgainstTheta`, or if a locus
+ *   has ratio 0 (an exclusion, which has no logarithm)
+ */
+export func log10KinshipLRAgainstTheta(
+    a as forensics.Profile,
+    b as forensics.Profile,
+    rel as Relationship,
+    alt as Relationship,
+    db as forensics.FrequencyDb,
+    theta as float) {
+    checkTheta($theta);
+    def loci as list of string init commonLoci($a, $b);
+    if (len($loci) == 0) {
+        fail("profiles '" + $a.id + "' and '" + $b.id + "' share no locus");
+    }
+    requireCovered($db, $loci, "profiles '" + $a.id + "' and '" + $b.id + "'");
+    def out as float init 0.0;
+    for (def locus in $loci) {
+        def lr as float init kinshipLRAtTheta(
+            $db,
+            $a.loci[$locus],
+            $b.loci[$locus],
+            $rel,
+            $alt,
+            $theta);
+        if ($lr <= 0.0) {
+            fail("profiles '" + $a.id + "' and '" + $b.id + "': the ratio at locus '" + $locus +
+                "' is 0 (an exclusion), which has no logarithm");
+        }
+        $out = $out + math.log10($lr);
     }
     return $out;
 }
@@ -800,8 +1065,8 @@ func childProbability(
  * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the paternity index at this locus
  * @throws {Error} kind "kinship" if the three genotypes are not at one locus,
- *   or on a maternal exclusion (the mother can transmit neither of the child's
- *   alleles)
+ *   as `mutationProbability` on the model, or on a maternal exclusion (the
+ *   mother can transmit neither of the child's alleles)
  */
 export func paternityIndexAt(
     db as forensics.FrequencyDb,
@@ -814,11 +1079,10 @@ export func paternityIndexAt(
     }
     def locus as string init $child.locus;
     def alleged as map of string to float init {};
-    def random as map of string to float init {};
     for (def a in [$child.a, $child.b]) {
         $alleged[$a] = paternalTransmission($model, $locus, $father, $a);
-        $random[$a] = forensics.alleleFrequency($db, $locus, $a);
     }
+    def random as map of string to float init freqsOf($db, $locus, [$child.a, $child.b]).p;
     def y as float init childProbability($mother, $child, $random);
     if ($y <= 0.0) {
         fail("locus '" + $locus + "': the mother cannot have transmitted either of the child's" +
@@ -843,7 +1107,7 @@ export func trioLoci(
     father as forensics.Profile) {
     def out as list of string init [];
     for (def locus in commonTrioLoci($mother, $child, $father)) {
-        if (forensics.hasLocus($db, $locus)) {
+        if (maps.has($db.loci, $locus)) {
             $out[] = $locus;
         }
     }
@@ -895,7 +1159,8 @@ func coveredTrioLoci(
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" if the trio shares no locus, shares one the
- *   database does not cover, or on a maternal exclusion
+ *   database does not cover, on a maternal exclusion, or if the CPI exceeds
+ *   the float range
  */
 export func paternityIndex(
     mother as forensics.Profile,
@@ -915,7 +1180,8 @@ export func paternityIndex(
  * @param model {MutationModel} the alleged father's mutation model
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" if the trio shares no locus, shares one the
- *   database does not cover, or on a maternal exclusion
+ *   database does not cover, on a maternal exclusion, or if the CPI exceeds
+ *   the float range
  */
 export func paternityIndexWith(
     mother as forensics.Profile,
@@ -926,13 +1192,18 @@ export func paternityIndexWith(
     def loci as list of string init coveredTrioLoci($db, $mother, $child, $allegedFather);
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             paternityIndexAt(
-            $db,
-            $mother.loci[$locus],
-            $child.loci[$locus],
-            $allegedFather.loci[$locus],
-            $model);
+                $db,
+                $mother.loci[$locus],
+                $child.loci[$locus],
+                $allegedFather.loci[$locus],
+                $model),
+            "combined paternity index",
+            $child.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -951,11 +1222,12 @@ func trioIndexTheta(
     theta as float) {
     def locus as string init $child.locus;
     def sampled as list of string init [$mother.a, $mother.b, $father.a, $father.b];
+    def f as Freqs init freqsOf($db, $locus, [$child.a, $child.b]);
     def alleged as map of string to float init {};
     def random as map of string to float init {};
     for (def a in [$child.a, $child.b]) {
         $alleged[$a] = paternalTransmission($model, $locus, $father, $a);
-        $random[$a] = drawProbability($db, $locus, $sampled, $a, $theta);
+        $random[$a] = drawProbability($f, $sampled, $a, $theta);
     }
     def y as float init childProbability($mother, $child, $random);
     if ($y <= 0.0) {
@@ -982,7 +1254,8 @@ func trioIndexTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the paternity index at this locus
  * @throws {Error} kind "kinship" on an out-of-range theta, if the three
- *   genotypes are not at one locus, or on a maternal exclusion
+ *   genotypes are not at one locus, as `mutationProbability` on the model, or
+ *   on a maternal exclusion
  */
 export func paternityIndexAtTheta(
     db as forensics.FrequencyDb,
@@ -1011,8 +1284,8 @@ export func paternityIndexAtTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" on an out-of-range theta, if the trio shares
- *   no locus, shares one the database does not cover, or on a maternal
- *   exclusion
+ *   no locus, shares one the database does not cover, on a maternal
+ *   exclusion, or if the CPI exceeds the float range
  */
 export func paternityIndexTheta(
     mother as forensics.Profile,
@@ -1035,8 +1308,8 @@ export func paternityIndexTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" on an out-of-range theta, if the trio shares
- *   no locus, shares one the database does not cover, or on a maternal
- *   exclusion
+ *   no locus, shares one the database does not cover, on a maternal
+ *   exclusion, or if the CPI exceeds the float range
  */
 export func paternityIndexWithTheta(
     mother as forensics.Profile,
@@ -1052,14 +1325,19 @@ export func paternityIndexWithTheta(
     def loci as list of string init coveredTrioLoci($db, $mother, $child, $allegedFather);
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             paternityIndexAtTheta(
-            $db,
-            $mother.loci[$locus],
-            $child.loci[$locus],
-            $allegedFather.loci[$locus],
-            $model,
-            $theta);
+                $db,
+                $mother.loci[$locus],
+                $child.loci[$locus],
+                $allegedFather.loci[$locus],
+                $model,
+                $theta),
+            "combined paternity index",
+            $child.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -1087,8 +1365,8 @@ export func paternityIndexWithTheta(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the paternity index at this locus
  * @throws {Error} kind "kinship" on an out-of-range theta, if the two
- *   genotypes are at different loci, or if the child's genotype has
- *   probability zero under the alternative
+ *   genotypes are at different loci, as `mutationProbability` on the model,
+ *   or if the child's genotype has probability zero under the alternative
  */
 export func duoPaternityIndexAt(
     db as forensics.FrequencyDb,
@@ -1102,11 +1380,12 @@ export func duoPaternityIndexAt(
     }
     def locus as string init $child.locus;
     def sf as list of string init [$father.a, $father.b];
-    def d1 as float init drawProbability($db, $locus, $sf, $child.a, $theta);
-    def d2 as float init drawProbability($db, $locus, $sf, $child.b, $theta);
+    def f as Freqs init freqsOf($db, $locus, [$child.a, $child.b]);
+    def d1 as float init drawProbability($f, $sf, $child.a, $theta);
+    def d2 as float init drawProbability($f, $sf, $child.b, $theta);
     def x as float init paternalTransmission($model, $locus, $father, $child.a) * $d2;
     def y as float init $d1 *
-        drawProbability($db, $locus, [$father.a, $father.b, $child.a], $child.b, $theta);
+        drawProbability($f, [$father.a, $father.b, $child.a], $child.b, $theta);
     if ($child.a != $child.b) {
         $x = $x + paternalTransmission($model, $locus, $father, $child.b) * $d1;
         $y = 2.0 * $y;
@@ -1130,7 +1409,8 @@ export func duoPaternityIndexAt(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the combined paternity index
  * @throws {Error} kind "kinship" on an out-of-range theta, if the two share no
- *   locus, or share one the database does not cover
+ *   locus, share one the database does not cover, or if the index exceeds the
+ *   float range
  */
 export func duoPaternityIndex(
     child as forensics.Profile,
@@ -1146,13 +1426,18 @@ export func duoPaternityIndex(
     requireCovered($db, $loci, "profiles '" + $child.id + "' and '" + $allegedFather.id + "'");
     def out as float init 1.0;
     for (def locus in $loci) {
-        $out = $out *
+        $out = timesLR(
+            $out,
             duoPaternityIndexAt(
-            $db,
-            $child.loci[$locus],
-            $allegedFather.loci[$locus],
-            $model,
-            $theta);
+                $db,
+                $child.loci[$locus],
+                $allegedFather.loci[$locus],
+                $model,
+                $theta),
+            "duo paternity index",
+            $child.id,
+            $allegedFather.id,
+            "");
     }
     return $out;
 }
@@ -1193,7 +1478,8 @@ export func inconsistentLoci(
  *
  * A restatement of the CPI, not further evidence; report the prior with it.
  * @param cpi {float} the combined paternity index
- * @return {float} the probability of paternity, in [0, 1)
+ * @return {float} the probability of paternity, in [0, 1]; a CPI above about
+ *   1e16 rounds to 1.0
  * @throws {Error} kind "kinship" on a negative CPI
  */
 export func probabilityOfPaternity(cpi as float) {

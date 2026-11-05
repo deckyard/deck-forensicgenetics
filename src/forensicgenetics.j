@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Autosomal STR profiles, reference allele frequencies and the single-source
@@ -10,10 +10,12 @@
  *
  * Alleles are strings: `"9.3"` and `"15.2"` are ordinary designations, and
  * `"15"` and `"15.0"` are different keys. `alleleValue` converts one to a
- * repeat count where arithmetic is meant (the mutation model in `kinship.j`).
+ * repeat count where arithmetic is meant (the mutation models in `kinship.j`
+ * and `mutation.j`).
  *
- * Every allele frequency is floored at the NRC II 5/(2N), using the locus's
- * own N; that is why `FrequencyDb` stores a sample size per locus.
+ * Allele frequencies are floored at the NRC II 5/(2N) on read, with the
+ * locus's own N; `FrequencyDb` stores a sample size per locus for that. A
+ * locus with `n == 0` has no floor.
  *
  * The module reads no published format. Build a `FrequencyDb` with `db` and
  * `withLocus`, or convert one with a reader deck (`@deckyard/strider` for
@@ -22,7 +24,11 @@
  * which mis-scores every locus the populations differ at.
  *
  * Sibling modules: `kinship.j` (pairwise LRs, paternity), `pedigree.j`
- * (whole-pedigree likelihoods), `lineage.j` (mtDNA and Y-STR).
+ * (whole-pedigree likelihoods), `mixture.j` (semi-continuous mixture LR),
+ * `lineage.j` (mtDNA and Y-STR), `popstats.j` (population statistics),
+ * `panels.j` (kit panels), `search.j` (database search), `xstr.j` (X-STRs),
+ * `reporting.j` (sampling uncertainty, verbal scale), `mutation.j` (Familias
+ * mutation models, silent alleles).
  * @module forensicgenetics
  * @see https://strider.online/formulae - the STRidER formulae page these
  *   estimators follow
@@ -34,8 +40,7 @@
  * def db as forensics.FrequencyDb init forensics.withLocus(
  *     forensics.db("example"), "D3S1358", 1034, {"15": 0.4, "16": 0.6});
  * def suspect as forensics.Profile init forensics.profile("S1", [
- *     forensics.genotype("D3S1358", "15", "16"),
- *     forensics.genotype("TH01", "9.3", "9.3")
+ *     forensics.genotype("D3S1358", "15", "16")
  * ]);
  * def t as float init forensics.THETA_GENERAL;
  * def rmp as float init forensics.randomMatchProbability($db, $suspect, $t);
@@ -46,6 +51,7 @@ use maps;
 use lists;
 use strings;
 use convert;
+use decimal;
 
 /**
  * The NRC II theta for a broad, well-mixed population.
@@ -164,7 +170,8 @@ export func alleleValue(allele as string) {
 }
 
 /**
- * Whether an allele label is a repeat count: digits with at most one `.`.
+ * Whether an allele label is a repeat count: digits with at most one `.`,
+ * at most `1.7976931348623157e308` (the float range).
  * @param allele {string} the allele label
  * @return {bool} true if `alleleValue` would succeed
  */
@@ -183,13 +190,35 @@ export func isNumericAllele(allele as string) {
             return false;
         }
     }
-    return $digits > 0 and $dots <= 1;
+    if ($digits == 0 or $dots > 1) {
+        return false;
+    }
+    # Only a label this long can exceed the float range; the exact decimal
+    # comparison runs for those alone.
+    if (len($allele) > 300) {
+        return decimal.compare($allele, MAX_ALLELE_VALUE) <= 0;
+    }
+    return true;
 }
+
+# MAX_ALLELE_VALUE is the largest finite float, as a decimal string: a longer
+# numeric label has no float repeat count.
+def const MAX_ALLELE_VALUE as string init "1.7976931348623157e308";
 
 # compareAlleles orders two allele labels: numerically when both carry a repeat
 # count, lexicographically otherwise, so a panel mixing "15" with "X" still has
-# a total order. Returns -1, 0 or 1.
+# a total order. Labels with equal repeat counts ("15", "15.0") are different
+# alleles and fall through to the lexicographic order, so the result is 0 only
+# for identical labels and `genotype` is independent of argument order.
+# Returns -1, 0 or 1.
+#
+# Floats order distinct values correctly whenever they differ (rounding is
+# monotone); on a float tie between different labels the exact decimal values
+# decide, since two labels can share a float ("15.00000000000000001", "15").
 func compareAlleles(x as string, y as string) {
+    if ($x == $y) {
+        return 0;
+    }
     if (isNumericAllele($x) and isNumericAllele($y)) {
         def vx as float init convert.toFloat($x);
         def vy as float init convert.toFloat($y);
@@ -199,7 +228,10 @@ func compareAlleles(x as string, y as string) {
         if ($vx > $vy) {
             return 1;
         }
-        return 0;
+        def exact as int init decimal.compare($x, $y);
+        if ($exact != 0) {
+            return $exact;
+        }
     }
     if ($x < $y) {
         return -1;
@@ -323,7 +355,8 @@ func addObservedCounts(counts as map of string to float, lf as LocusFrequencies)
  * @param name {string} the dataset label for the pooled table
  * @return {FrequencyDb} the pooled table, over the shared loci
  * @throws {Error} kind "forensicgenetics" on an empty list, when the inputs
- *   share no locus, or when a shared locus has no sample size anywhere
+ *   share no locus, or when an input has `n == 0` at a shared locus (its
+ *   frequencies carry no counts to pool)
  */
 export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
     if (len($dbs) == 0) {
@@ -355,13 +388,16 @@ export func combineFrequencies(dbs as list of FrequencyDb, name as string) {
         def pooledN as int init 0;
         for (def i in 0..len($dbs)) {
             def lf as LocusFrequencies init $dbs[$i].loci[$locus];
+            if ($lf.n <= 0) {
+                # Counts are p * 2N, so a table without N would contribute
+                # nothing and its alleles would pool to frequency 0.
+                fail("combineFrequencies: database {$i} ('" + $dbs[$i].name + "') has n = {$lf.n}" +
+                    " at locus '" + $locus + "'; pooling weights by counts p * 2N, so every" +
+                    " input needs its sample size");
+            }
             $pooledN = $pooledN + $lf.n;
             $alleles = $alleles + 2.0 * convert.toFloat($lf.n);
             $counts = addObservedCounts($counts, $lf);
-        }
-        if ($alleles <= 0.0) {
-            fail("locus '" + $locus + "': no input states a sample size, so it" +
-                " cannot be weighted");
         }
         def pooled as map of string to float init {};
         for (def a in $counts) {
@@ -406,8 +442,8 @@ export func sampleSize(fdb as FrequencyDb, locus as string) {
     return lookup($fdb, $locus).n;
 }
 
-# lookup fetches a locus with a message that names the missing locus, which is
-# far more useful than the runtime's generic missing-key error.
+# lookup fetches a locus, failing with a message that names the locus and the
+# table instead of the runtime's generic missing-key error.
 func lookup(fdb as FrequencyDb, locus as string) {
     if (not maps.has($fdb.loci, $locus)) {
         fail("frequency database '" + $fdb.name + "' has no locus '" + $locus + "'");
@@ -477,8 +513,8 @@ export func alleleFrequency(fdb as FrequencyDb, locus as string, allele as strin
  * A genotype at one locus, its allele pair in canonical order.
  *
  * `genotype("TH01", "9.3", "6")` and `genotype("TH01", "6", "9.3")` are equal.
- * Two numeric alleles order by repeat count; otherwise the order is
- * lexicographic.
+ * Two numeric alleles order by repeat count; otherwise, and between labels of
+ * equal count such as `"15"` and `"15.0"`, the order is lexicographic.
  * @param locus {string} the locus name
  * @param a {string} one allele label
  * @param b {string} the other allele label
@@ -733,17 +769,34 @@ export func log10RandomMatchProbability(fdb as FrequencyDb, p as Profile, theta 
  * The single-source likelihood ratio, `1 / RMP`.
  *
  * "The stain came from this person" against "it came from an unrelated person
- * from the reference population".
+ * from the reference population". Throws for an RMP below `1e-308`; take
+ * `-log10RandomMatchProbability` as the log10 LR then.
  * @param fdb {FrequencyDb} the reference frequencies
  * @param p {Profile} the profile to score
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
- * @throws {Error} kind "forensicgenetics" as for `randomMatchProbability`
+ * @throws {Error} kind "forensicgenetics" as for `randomMatchProbability`, or
+ *   if the RMP is below `1e-308` (the ratio would exceed the float range)
  */
 export func matchLikelihoodRatio(fdb as FrequencyDb, p as Profile, theta as float) {
     def rmp as float init randomMatchProbability($fdb, $p, $theta);
+    return reciprocalLR($rmp, $p.id, "; take -log10RandomMatchProbability as the log10 LR");
+}
+
+# MIN_RECIPROCAL is the smallest probability whose reciprocal is safely finite:
+# 1 / 1e-308 = 1e308 is below the float maximum (1.797e308), and the margin
+# covers the rounding of a subnormal probability.
+def const MIN_RECIPROCAL as float init 1.0e-308;
+
+# reciprocalLR is `1 / rmp` for the match LRs, throwing this module's error
+# where the interpreter would raise a float overflow.
+func reciprocalLR(rmp as float, id as string, hint as string) {
     if ($rmp <= 0.0) {
-        fail("profile '" + $p.id + "' has a zero random match probability");
+        fail("profile '" + $id + "' has a zero random match probability");
+    }
+    if ($rmp < MIN_RECIPROCAL) {
+        fail("profile '" + $id + "': the random match probability {$rmp} is below 1e-308, so" +
+            " its reciprocal exceeds the float range" + $hint);
     }
     return 1.0 / $rmp;
 }
@@ -811,7 +864,8 @@ export func randomMatchProbabilityAcross(
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
  * @throws {Error} kind "forensicgenetics" as `randomMatchProbabilityAcross`,
- *   or if the weighted probability is zero
+ *   or if the weighted probability is zero or below `1e-308` (the ratio would
+ *   exceed the float range)
  */
 export func matchLikelihoodRatioAcross(
     dbs as list of FrequencyDb,
@@ -819,10 +873,7 @@ export func matchLikelihoodRatioAcross(
     p as Profile,
     theta as float) {
     def rmp as float init randomMatchProbabilityAcross($dbs, $weights, $p, $theta);
-    if ($rmp <= 0.0) {
-        fail("profile '" + $p.id + "' has a zero random match probability");
-    }
-    return 1.0 / $rmp;
+    return reciprocalLR($rmp, $p.id, "");
 }
 
 # --- mixtures: inclusion / exclusion ----------------------------------------

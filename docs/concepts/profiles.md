@@ -29,8 +29,9 @@ values:
 forensicgenetics.genotype("TH01", "9.3", "6") == forensicgenetics.genotype("TH01", "6", "9.3")
 ```
 
-Two numeric alleles order by repeat count (`"6"` before `"9.3"`); otherwise
-the order is lexicographic.
+Two numeric alleles order by repeat count (`"6"` before `"9.3"`), compared
+exactly in decimal; otherwise, and between labels of equal count such as
+`"15"` and `"15.0"`, the order is lexicographic.
 
 ```jennifer
 forensicgenetics.isHomozygous(forensicgenetics.genotype("TH01", "6", "6"));   # true

@@ -31,7 +31,7 @@ Each coefficient must be in `[0, 1]` and the three must sum to 1 (within
 
 `HALF_SIBLINGS`, `GRANDPARENT` and `AVUNCULAR` have the same coefficients and
 give exactly the same LR: autosomal STRs cannot separate them. The three names
-exist so a report can state the hypothesis. Separating them needs
+let a report state the hypothesis. Separating them needs
 [lineage markers](lineage.md), a denser panel, or more relatives in a
 [pedigree](pedigrees.md).
 
@@ -67,9 +67,8 @@ kinship.pairLoci($db, $a, $b);                    # the loci used
 ```
 
 `kinshipLR` tests against `UNRELATED`; `kinshipLRAgainst` against any
-alternative, which is the form most real questions take ("full or half
-siblings?"). Both multiply over the loci both profiles carry. A locus only one
-profile carries is skipped, since nothing can be computed there; a locus both
+alternative ("full or half siblings?"). Both multiply over the loci both
+profiles carry. A locus only one profile carries is skipped; a locus both
 carry but the table does not cover throws, as in `randomMatchProbability`,
 because dropping it could hide an exclusion. Narrow the profiles with
 `forensicgenetics.restrict` to leave a locus out on purpose. No shared locus
@@ -97,8 +96,8 @@ same locus only counts against them.
 
 ## With theta
 
-Each kinship function has a `...Theta` variant taking the co-ancestry
-coefficient last:
+Each LR and joint-probability function has a `...Theta` variant taking the
+co-ancestry coefficient last:
 
 ```jennifer
 def lr as float init kinship.kinshipLRTheta($a, $b, kinship.FULL_SIBLINGS, $db, 0.01);

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Whole-pedigree likelihoods by Elston-Stewart peeling.
@@ -64,27 +64,15 @@ export def struct Pedigree {
     members as map of string to Person
 };
 
-# Frame is everything the peeling needs at one locus, built once by
-# `locusLikelihood` and threaded through the message recursion.
-#
-# Genotypes are indexed, not named: `gi[k]` and `gj[k]` are the two allele
-# indices of genotype k, with gi <= gj so each unordered pair appears once.
-# Allele indices run over the alleles actually observed at this locus, plus -
-# when their frequencies leave room - one final lumped class standing for
-# every allele nobody showed.
-def struct Frame {
-    alleleFreq as list of float,
-    nAlleles as int,
-    pairIdx as list of list of int,
-    gi as list of int,
-    gj as list of int,
-    famFather as list of string,
-    famMother as list of string,
-    famChildren as list of list of string,
-    incidence as map of string to list of int,
-    founder as map of string to bool,
-    observed as map of string to int
-};
+/**
+ * The most distinct alleles the typed members may show at one locus, excluding
+ * the lumped class.
+ *
+ * A nuclear family whose parents are both untyped costs children * G^2, with
+ * G = A (A + 1) / 2 genotypes over A = alleles + 1. At this limit one untyped
+ * couple with ten typed children takes about 3 s per locus.
+ */
+export def const MAX_PEDIGREE_ALLELES as int init 20;
 
 # --- errors -----------------------------------------------------------------
 
@@ -141,6 +129,39 @@ export func withChild(
     father as string,
     mother as string) {
     checkNewMember($ped, $id, $sex);
+    checkParents($id, $father, $mother);
+    def out as Pedigree init $ped;
+    $out.members[$id] = Person{id: $id, sex: $sex, father: $father, mother: $mother};
+    return $out;
+}
+
+/**
+ * A pedigree built from its members in one pass.
+ *
+ * A person with `""` for both parents is a founder and is checked as by
+ * `withFounder`; anyone else as by `withChild`. Folding `withFounder` /
+ * `withChild` copies the whole pedigree per member, which is quadratic (23 s
+ * for 4000 members); this is linear.
+ * @param name {string} a label for the pedigree
+ * @param people {list of Person} the members, in member order
+ * @return {Pedigree} the pedigree
+ * @throws {Error} kind "pedigree" as `withFounder` and `withChild` do
+ */
+export func pedigreeOf(name as string, people as list of Person) {
+    def out as Pedigree init Pedigree{name: $name, members: {}};
+    for (def p in $people) {
+        checkNewMember($out, $p.id, $p.sex);
+        if (len($p.father) > 0 or len($p.mother) > 0) {
+            checkParents($p.id, $p.father, $p.mother);
+        }
+        $out.members[$p.id] = $p;
+    }
+    return $out;
+}
+
+# checkParents rejects a child's parent pair: one of them unnamed, the child
+# as its own parent, or one id for both.
+func checkParents(id as string, father as string, mother as string) {
     if (len($father) == 0 or len($mother) == 0) {
         fail("member '" + $id + "' must name both parents or neither");
     }
@@ -150,9 +171,6 @@ export func withChild(
     if ($father == $mother) {
         fail("member '" + $id + "' names '" + $father + "' as both parents");
     }
-    def out as Pedigree init $ped;
-    $out.members[$id] = Person{id: $id, sex: $sex, father: $father, mother: $mother};
-    return $out;
 }
 
 func checkNewMember(ped as Pedigree, id as string, sex as string) {
@@ -209,7 +227,8 @@ export func personOf(ped as Pedigree, id as string) {
  * @throws {Error} kind "pedigree" if there is no such member
  */
 export func isFounder(ped as Pedigree, id as string) {
-    return len(personOf($ped, $id).father) == 0;
+    def p as Person init personOf($ped, $id);
+    return len($p.father) == 0 and len($p.mother) == 0;
 }
 
 /**
@@ -232,6 +251,32 @@ export func childrenOf(ped as Pedigree, id as string) {
 
 # --- structural validation --------------------------------------------------
 
+# Shape is a validated pedigree in index form, built once per call by
+# `shapeOf` and shared by every locus. Members are numbered in member order.
+# Nodes of the individual/family graph are numbered members first (0..n-1),
+# then nuclear families (n..n+F-1).
+#
+# A family's two parents are `parentA` and `parentB` in lexicographic id order,
+# not father and mother: autosomal transmission is symmetric, and a fixed
+# order fixes the summation order of the peeling.
+#
+# `order` lists every node, component by component, each component in
+# depth-first pre-order from its root; `up` is a node's neighbour towards the
+# root (-1 for a root). Every node comes after its `up`, so walking `order`
+# backwards has every message a node needs ready before the node itself.
+def struct Shape {
+    ids as list of string,
+    index as map of string to int,
+    founder as list of bool,
+    parentA as list of int,
+    parentB as list of int,
+    children as list of list of int,
+    incidence as list of list of int,
+    order as list of int,
+    up as list of int,
+    roots as list of int
+};
+
 /**
  * Check that a pedigree is well formed and peelable: every named parent is a
  * member, nobody is their own ancestor, and the individual/family graph is a
@@ -241,15 +286,7 @@ export func childrenOf(ped as Pedigree, id as string) {
  * @throws {Error} kind "pedigree" naming the specific problem
  */
 export func validate(ped as Pedigree) {
-    for (def id in $ped.members) {
-        def p as Person init $ped.members[$id];
-        if (len($p.father) > 0) {
-            requireMember($ped, $p.father, $id, "father");
-            requireMember($ped, $p.mother, $id, "mother");
-        }
-    }
-    checkNoAncestorCycle($ped);
-    checkForest($ped);
+    shapeOf($ped);
 }
 
 func requireMember(ped as Pedigree, parent as string, child as string, role as string) {
@@ -259,187 +296,305 @@ func requireMember(ped as Pedigree, parent as string, child as string, role as s
     }
 }
 
+# Parentage is each member's parents by member number (-1 for a founder).
+def struct Parentage {
+    founder as list of bool,
+    father as list of int,
+    mother as list of int
+};
+
+# Families is the nuclear families, numbered in first-appearance order, and
+# the family each member is a child of (-1 for a founder), and each member's
+# incidence list (see `incidenceOf`). Helpers take it whole: a struct argument
+# that is only read is borrowed, where a bare list argument is copied per call.
+def struct Families {
+    parentA as list of int,
+    parentB as list of int,
+    children as list of list of int,
+    childFam as list of int,
+    incidence as list of list of int
+};
+
+# Walk is the traversal order of the individual/family forest (see `Shape`).
+def struct Walk {
+    order as list of int,
+    up as list of int,
+    roots as list of int
+};
+
+# shapeOf validates a pedigree and returns it in index form. Every structure is
+# a local list or map written in place and every helper only reads its struct
+# arguments (borrowed, not copied), so the pass is linear in members plus
+# families, with a log factor from union-find.
+func shapeOf(ped as Pedigree) {
+    def ids as list of string init maps.keys($ped.members);
+    def index as map of string to int init {};
+    for (def i in 0..len($ids)) {
+        $index[$ids[$i]] = $i;
+    }
+    def par as Parentage init parentage($ped, $ids, $index);
+    checkNoAncestorCycle($ids, $par);
+    def fams as Families init families($ids, $par);
+    $fams.incidence = incidenceOf(len($ids), $fams);
+    checkForest($ped.name, len($ids), $fams);
+    def w as Walk init walk(len($ids), $fams);
+    return Shape{
+        ids: $ids,
+        index: $index,
+        founder: $par.founder,
+        parentA: $fams.parentA,
+        parentB: $fams.parentB,
+        children: $fams.children,
+        incidence: $fams.incidence,
+        order: $w.order,
+        up: $w.up,
+        roots: $w.roots
+    };
+}
+
+# parentage resolves every member's parents to member numbers, failing on a
+# parent who is not a member. A `Person` literal skips `withChild`'s checks, so
+# they are repeated here: one named parent would otherwise make a founder and
+# drop the other parent's link (and any exclusion it carries).
+func parentage(ped as Pedigree, ids as list of string, index as map of string to int) {
+    def out as Parentage init Parentage{founder: [], father: [], mother: []};
+    for (def id in $ids) {
+        def p as Person init $ped.members[$id];
+        if (len($p.father) == 0 and len($p.mother) == 0) {
+            $out.founder[] = true;
+            $out.father[] = -1;
+            $out.mother[] = -1;
+            continue;
+        }
+        checkParents($id, $p.father, $p.mother);
+        requireMember($ped, $p.father, $id, "father");
+        requireMember($ped, $p.mother, $id, "mother");
+        $out.founder[] = false;
+        $out.father[] = $index[$p.father];
+        $out.mother[] = $index[$p.mother];
+    }
+    return $out;
+}
+
+# families groups the children by parent couple. A couple's key is its two
+# member numbers in lexicographic id order, so both parents' roles and the
+# order the children name them in give the same family.
+func families(ids as list of string, par as Parentage) {
+    def out as Families init Families{
+        parentA: [],
+        parentB: [],
+        children: [],
+        childFam: [],
+        incidence: []
+    };
+    def famIndex as map of string to int init {};
+    for (def i in 0..len($ids)) {
+        if ($par.founder[$i]) {
+            $out.childFam[] = -1;
+            continue;
+        }
+        def a as int init $par.father[$i];
+        def b as int init $par.mother[$i];
+        if ($ids[$b] < $ids[$a]) {
+            $a = $par.mother[$i];
+            $b = $par.father[$i];
+        }
+        def key as string init "{$a},{$b}";
+        if (not maps.has($famIndex, $key)) {
+            $famIndex[$key] = len($out.parentA);
+            $out.parentA[] = $a;
+            $out.parentB[] = $b;
+            $out.children[] = [];
+        }
+        def f as int init $famIndex[$key];
+        $out.children[$f][] = $i;
+        $out.childFam[] = $f;
+    }
+    return $out;
+}
+
+# incidenceOf lists each member's families: those it parents, in family order,
+# then the one it is a child of. The order fixes the order inbound messages
+# are multiplied in.
+func incidenceOf(n as int, fams as Families) {
+    def out as list of list of int init [];
+    for (def i in 0..$n) {
+        $out[] = [];
+    }
+    for (def f in 0..len($fams.parentA)) {
+        $out[$fams.parentA[$f]][] = $f;
+        $out[$fams.parentB[$f]][] = $f;
+    }
+    for (def i in 0..$n) {
+        if ($fams.childFam[$i] >= 0) {
+            $out[$i][] = $fams.childFam[$i];
+        }
+    }
+    return $out;
+}
+
+# walk orders the individual/family forest depth-first from the first
+# unvisited member of each component. The graph is known to be a forest, so
+# every node is pushed once and a stack of n + F slots suffices.
+func walk(n as int, fams as Families) {
+    def total as int init $n + len($fams.parentA);
+    def out as Walk init Walk{order: [], up: [], roots: []};
+    def seen as list of bool init [];
+    def stack as list of int init [];
+    for (def k in 0..$total) {
+        $seen[] = false;
+        $out.up[] = -1;
+        $stack[] = 0;
+    }
+    for (def s in 0..$n) {
+        if ($seen[$s]) {
+            continue;
+        }
+        $out.roots[] = $s;
+        $seen[$s] = true;
+        $stack[0] = $s;
+        def top as int init 1;
+        while ($top > 0) {
+            $top = $top - 1;
+            def cur as int init $stack[$top];
+            $out.order[] = $cur;
+            for (def v in neighbours($n, $fams, $cur)) {
+                if ($seen[$v]) {
+                    continue;
+                }
+                $seen[$v] = true;
+                $out.up[$v] = $cur;
+                $stack[$top] = $v;
+                $top = $top + 1;
+            }
+        }
+    }
+    return $out;
+}
+
+# neighbours lists a node's neighbours in the individual/family graph: a
+# member's families, or a family's two parents and its children.
+func neighbours(n as int, fams as Families, node as int) {
+    def out as list of int init [];
+    if ($node < $n) {
+        for (def f in $fams.incidence[$node]) {
+            $out[] = $n + $f;
+        }
+        return $out;
+    }
+    def f as int init $node - $n;
+    $out[] = $fams.parentA[$f];
+    $out[] = $fams.parentB[$f];
+    for (def c in $fams.children[$f]) {
+        $out[] = $c;
+    }
+    return $out;
+}
+
 # checkNoAncestorCycle proves that nobody is their own ancestor. One
-# depth-first pass over the whole parent graph settles it: a member on the
-# current path is open, and meeting an open member again closes a cycle.
+# depth-first pass over the whole parent graph settles it: `state` is 1 while a
+# member is on the current path and 2 once its ancestors are all accounted
+# for, and meeting an open member again closes a cycle.
 #
 # Walking up separately from every member would revisit the same ancestors over
 # and over - quadratic on a deep pedigree - where this settles each member once.
 # Meeting an already-settled ancestor by a second route is a consanguinity
 # diamond, not a cycle, and is left to `checkForest` to report in its own words.
-func checkNoAncestorCycle(ped as Pedigree) {
-    def state as map of string to int init {};
-    for (def id in $ped.members) {
-        if (not maps.has($state, $id)) {
-            $state = settleAncestors($ped, $state, $id);
-        }
+#
+# The stack is a list plus a live-entry count: popping only moves the count,
+# where lists.pop would copy the whole stack. A member stays on the stack while
+# its parents are walked, which is what closes it on the way back down. Each
+# member opens once and pushes at most two parents, so 2n + 1 slots suffice.
+func checkNoAncestorCycle(ids as list of string, par as Parentage) {
+    def state as list of int init [];
+    def stack as list of int init [0];
+    for (def i in 0..len($ids)) {
+        $state[] = 0;
+        $stack[] = 0;
+        $stack[] = 0;
     }
-}
-
-# settleAncestors walks up from `start`, marking each member open on the way up
-# and settled on the way back down. `state` is 1 while a member is on the
-# current path and 2 once its ancestors are all accounted for.
-func settleAncestors(ped as Pedigree, state as map of string to int, start as string) {
-    def out as map of string to int init $state;
-    # The stack is a list plus a live-entry count. Pushing reuses a slot an
-    # earlier pop left behind before it grows the list, and popping only moves
-    # the count - where lists.pop would return a fresh copy of the whole stack
-    # on every pass. A member stays on the stack while its parents are walked,
-    # which is what closes it on the way back down.
-    def stack as list of string init [$start];
-    def top as int init 1;
-    while ($top > 0) {
-        def cur as string init $stack[$top - 1];
-        if (maps.has($out, $cur)) {
-            if ($out[$cur] == 1) {
-                $out[$cur] = 2;
-            }
-            $top = $top - 1;
+    for (def s in 0..len($ids)) {
+        if ($state[$s] != 0) {
             continue;
         }
-        $out[$cur] = 1;
-        for (def p in unsettledParents($ped, $out, $cur)) {
-            if ($top < len($stack)) {
-                $stack[$top] = $p;
-            } else {
-                $stack[] = $p;
+        $stack[0] = $s;
+        def top as int init 1;
+        while ($top > 0) {
+            def cur as int init $stack[$top - 1];
+            if ($state[$cur] != 0) {
+                if ($state[$cur] == 1) {
+                    $state[$cur] = 2;
+                }
+                $top = $top - 1;
+                continue;
             }
-            $top = $top + 1;
+            $state[$cur] = 1;
+            for (def q in parentsOf($par, $cur)) {
+                if ($state[$q] == 1) {
+                    fail("member '" + $ids[$q] + "' is their own ancestor");
+                }
+                if ($state[$q] == 0) {
+                    $stack[$top] = $q;
+                    $top = $top + 1;
+                }
+            }
         }
     }
-    return $out;
 }
 
-# unsettledParents lists the parents that still need walking, and raises if one
-# is already open - that is the member appearing among its own ancestors.
-func unsettledParents(ped as Pedigree, state as map of string to int, id as string) {
-    def out as list of string init [];
-    for (def p in parentIds($ped, $id)) {
-        if (maps.has($state, $p)) {
-            if ($state[$p] == 1) {
-                fail("member '" + $p + "' is their own ancestor");
-            }
-        } else {
-            $out[] = $p;
-        }
-    }
-    return $out;
-}
-
-# parentIds lists a member's parents, or nothing for a founder. A parent named
-# but absent is left to `validate`'s own check, which reports it precisely.
-func parentIds(ped as Pedigree, id as string) {
-    def p as Person init $ped.members[$id];
-    if (len($p.father) == 0) {
+# parentsOf lists a member's two parents, or nothing for a founder.
+func parentsOf(par as Parentage, i as int) {
+    if ($par.founder[$i]) {
         return [];
     }
-    def out as list of string init [];
-    if (maps.has($ped.members, $p.father)) {
-        $out[] = $p.father;
-    }
-    if (maps.has($ped.members, $p.mother)) {
-        $out[] = $p.mother;
-    }
-    return $out;
+    return [$par.father[$i], $par.mother[$i]];
 }
 
-# Couples is the pedigree's nuclear families: the parent pairs in
-# first-appearance order, plus a father -> mother -> family-number index so a
-# lookup is a hash hit rather than a scan.
-def struct Couples {
-    pairs as list of list of string,
-    index as map of string to map of string to int
+# UnionFind is checkForest's disjoint-set forest: each node's parent and each
+# root's tree size.
+def struct UnionFind {
+    parent as list of int,
+    size as list of int
 };
 
-# couple orders a parent pair so the same two people always give the same
-# two-element list, whichever child names them.
-func couple(father as string, mother as string) {
-    if ($father < $mother) {
-        return [$father, $mother];
+# checkForest rejects any loop in the individual/family graph by union-find
+# over its nodes (members 0..n-1, families n..n+F-1). An edge that joins two
+# already-connected nodes closes a loop. Union by size keeps every tree
+# O(log n) deep, so `findRoot` needs no path compression and can borrow the
+# forest read-only. Edges run child-family first, then family-parent;
+# whether a loop exists does not depend on the order.
+func checkForest(name as string, n as int, fams as Families) {
+    def uf as UnionFind init UnionFind{parent: [], size: []};
+    for (def k in 0..($n + len($fams.parentA))) {
+        $uf.parent[] = $k;
+        $uf.size[] = 1;
     }
-    return [$mother, $father];
-}
-
-# familyCouples groups the pedigree's children by parent couple, returning the
-# couples in first-appearance order.
-func familyCouples(ped as Pedigree) {
-    def out as Couples init Couples{pairs: [], index: {}};
-    for (def id in $ped.members) {
-        def p as Person init $ped.members[$id];
-        if (len($p.father) > 0) {
-            $out = addCouple($out, couple($p.father, $p.mother));
+    def edgeA as list of int init [];
+    def edgeB as list of int init [];
+    for (def i in 0..$n) {
+        if ($fams.childFam[$i] >= 0) {
+            $edgeA[] = $n + $fams.childFam[$i];
+            $edgeB[] = $i;
         }
     }
-    return $out;
-}
-
-# addCouple records a parent pair the first time it is met, numbering it in
-# first-appearance order.
-func addCouple(couples as Couples, pair as list of string) {
-    if (hasCouple($couples, $pair[0], $pair[1])) {
-        return $couples;
+    for (def f in 0..len($fams.parentA)) {
+        $edgeA[] = $n + $f;
+        $edgeB[] = $fams.parentA[$f];
+        $edgeA[] = $n + $f;
+        $edgeB[] = $fams.parentB[$f];
     }
-    def out as Couples init $couples;
-    def row as map of string to int init {};
-    if (maps.has($out.index, $pair[0])) {
-        $row = $out.index[$pair[0]];
-    }
-    def pairs as list of list of string init $out.pairs;
-    $row[$pair[1]] = len($pairs);
-    $pairs[] = $pair;
-    $out.index[$pair[0]] = $row;
-    $out.pairs = $pairs;
-    return $out;
-}
-
-# indexOfCouple finds a parent pair's family number. The pairs are indexed by
-# father then mother, so this is two hash lookups rather than a scan through
-# every couple in the pedigree comparing lists.
-func indexOfCouple(couples as Couples, a as string, b as string) {
-    return $couples.index[$a][$b];
-}
-
-func hasCouple(couples as Couples, a as string, b as string) {
-    return maps.has($couples.index, $a) and maps.has($couples.index[$a], $b);
-}
-
-# checkForest rejects any loop in the individual/family graph, using union-find
-# over nodes named "i:<id>" for individuals and "f:<n>" for families. An edge
-# that joins two already-connected nodes closes a loop.
-#
-# The unions are done in place. Passing the parent map to a helper and taking
-# the result back would copy the whole map once per edge, which is quadratic in
-# the pedigree and was the bulk of validation's cost.
-func checkForest(ped as Pedigree) {
-    def parent as map of string to string init {};
-    for (def id in $ped.members) {
-        $parent["i:" + $id] = "i:" + $id;
-    }
-    def couples as Couples init familyCouples($ped);
-    for (def n in 0..len($couples.pairs)) {
-        $parent["f:{$n}"] = "f:{$n}";
-    }
-    for (def id in $ped.members) {
-        def p as Person init $ped.members[$id];
-        if (len($p.father) > 0) {
-            def pair as list of string init couple($p.father, $p.mother);
-            def n as int init indexOfCouple($couples, $pair[0], $pair[1]);
-            def ra as string init findRoot($parent, "f:{$n}");
-            def rb as string init findRoot($parent, "i:" + $id);
-            if ($ra == $rb) {
-                failLoop($ped.name);
-            }
-            $parent[$ra] = $rb;
+    for (def e in 0..len($edgeA)) {
+        def ra as int init findRoot($uf, $edgeA[$e]);
+        def rb as int init findRoot($uf, $edgeB[$e]);
+        if ($ra == $rb) {
+            failLoop($name);
         }
-    }
-    for (def n in 0..len($couples.pairs)) {
-        for (def side in 0..2) {
-            def ra as string init findRoot($parent, "f:{$n}");
-            def rb as string init findRoot($parent, "i:" + $couples.pairs[$n][$side]);
-            if ($ra == $rb) {
-                failLoop($ped.name);
-            }
-            $parent[$ra] = $rb;
+        if ($uf.size[$ra] < $uf.size[$rb]) {
+            $uf.parent[$ra] = $rb;
+            $uf.size[$rb] = $uf.size[$rb] + $uf.size[$ra];
+        } else {
+            $uf.parent[$rb] = $ra;
+            $uf.size[$ra] = $uf.size[$ra] + $uf.size[$rb];
         }
     }
 }
@@ -447,6 +602,14 @@ func checkForest(ped as Pedigree) {
 func failLoop(name as string) {
     fail("pedigree '" + $name + "' contains a loop (a consanguineous mating or a repeated" +
         " marriage); Elston-Stewart peeling needs a simple pedigree");
+}
+
+func findRoot(uf as UnionFind, x as int) {
+    def cur as int init $x;
+    while ($uf.parent[$cur] != $cur) {
+        $cur = $uf.parent[$cur];
+    }
+    return $cur;
 }
 
 # indexOfString finds a label's position, or -1.
@@ -457,14 +620,6 @@ func indexOfString(xs as list of string, want as string) {
         }
     }
     return -1;
-}
-
-func findRoot(parent as map of string to string, x as string) {
-    def cur as string init $x;
-    while ($parent[$cur] != $cur) {
-        $cur = $parent[$cur];
-    }
-    return $cur;
 }
 
 /**
@@ -483,37 +638,56 @@ export func isSimple(ped as Pedigree) {
 
 # --- per-locus frame --------------------------------------------------------
 
+# Frame is the per-locus part of the peeling, built by `buildFrame`.
+#
+# Genotypes are indexed, not named: `gi[k]` and `gj[k]` are the two allele
+# indices of genotype k, with gi <= gj so each unordered pair appears once.
+# Allele indices run over the alleles actually observed at this locus, plus -
+# when their frequencies leave room - one final lumped class standing for
+# every allele nobody showed. `observed[i]` is member i's genotype index, or -1
+# when untyped.
+def struct Frame {
+    alleleFreq as list of float,
+    nAlleles as int,
+    pairIdx as list of list of int,
+    gi as list of int,
+    gj as list of int,
+    observed as list of int
+};
+
+# SUM_TOLERANCE absorbs the rounding of a floored-frequency sum: a table whose
+# observed alleles sum to exactly 1 can add up to 1.0000000000000002.
+def const SUM_TOLERANCE as float init 0.000000001;
+
 # observedAlleles lists, in first-appearance order, every allele label a typed
 # member of the pedigree shows at this locus. Everything else is lumped.
-func observedAlleles(ped as Pedigree, genotypes as map of string to forensics.Genotype) {
+func observedAlleles(shape as Shape, genotypes as map of string to forensics.Genotype) {
     def out as list of string init [];
     for (def id in $genotypes) {
-        if (maps.has($ped.members, $id)) {
-            $out = addLabels($out, $genotypes[$id]);
+        if (maps.has($shape.index, $id)) {
+            for (def a in [$genotypes[$id].a, $genotypes[$id].b]) {
+                if (not lists.contains($out, $a)) {
+                    $out[] = $a;
+                }
+            }
         }
     }
     return $out;
 }
 
-func addLabels(labels as list of string, g as forensics.Genotype) {
-    def out as list of string init $labels;
-    for (def a in [$g.a, $g.b]) {
-        if (not lists.contains($out, $a)) {
-            $out[] = $a;
-        }
-    }
-    return $out;
-}
-
-# buildFrame assembles everything the peeling needs at one locus: the lumped
-# allele frequencies, the genotype index, the nuclear families and their
-# incidence, and each typed member's observed genotype index.
+# buildFrame assembles the per-locus part of the peeling: the lumped allele
+# frequencies, the genotype index and each typed member's genotype index.
 func buildFrame(
-    ped as Pedigree,
+    shape as Shape,
     db as forensics.FrequencyDb,
     locus as string,
     genotypes as map of string to forensics.Genotype) {
-    def labels as list of string init observedAlleles($ped, $genotypes);
+    def labels as list of string init observedAlleles($shape, $genotypes);
+    def shown as int init len($labels);
+    if ($shown > MAX_PEDIGREE_ALLELES) {
+        fail("locus '" + $locus + "': the typed members show {$shown} distinct alleles," +
+            " more than MAX_PEDIGREE_ALLELES ({MAX_PEDIGREE_ALLELES})");
+    }
     def freq as list of float init [];
     def total as float init 0.0;
     for (def a in $labels) {
@@ -528,8 +702,10 @@ func buildFrame(
     # to more than 1 and the ratio comes to depend on how many untyped people
     # each hypothesis names; rescaled to sum to 1, a floored allele drops back
     # below its 5/(2N) floor and this module stops agreeing with kinship.j on
-    # the same pair. Neither is an answer, so the locus is refused.
-    if ($total > 1.0) {
+    # the same pair. Neither is an answer, so the locus is refused. A sum past
+    # 1 by no more than SUM_TOLERANCE is rounding: the lumped class is then
+    # empty (clamped to 0) and left out.
+    if ($total > 1.0 + SUM_TOLERANCE) {
         def n as int init forensics.sampleSize($db, $locus);
         fail("locus '" + $locus + "': the observed alleles' floored frequencies sum to {$total}," +
             " past 1, so there is no distribution to sum untyped members over - the table" +
@@ -547,30 +723,25 @@ func buildFrame(
             $gj[] = $j;
         }
     }
-    def observed as map of string to int init {};
+    def observed as list of int init [];
+    for (def i in 0..len($shape.ids)) {
+        $observed[] = -1;
+    }
     for (def id in $genotypes) {
-        if (maps.has($ped.members, $id)) {
-            def g as forensics.Genotype init $genotypes[$id];
-            def ia as int init indexOfString($labels, $g.a);
-            def ib as int init indexOfString($labels, $g.b);
-            $observed[$id] = genotypeIndex(len($freq), $ia, $ib);
+        if (maps.has($shape.index, $id)) {
+            def ia as int init indexOfString($labels, $genotypes[$id].a);
+            def ib as int init indexOfString($labels, $genotypes[$id].b);
+            $observed[$shape.index[$id]] = genotypeIndex(len($freq), $ia, $ib);
         }
     }
-    return withFamilies(
-        $ped,
-        Frame{
-            alleleFreq: $freq,
-            nAlleles: len($freq),
-            pairIdx: pairTable(len($freq)),
-            gi: $gi,
-            gj: $gj,
-            famFather: [],
-            famMother: [],
-            famChildren: [],
-            incidence: {},
-            founder: {},
-            observed: $observed
-        });
+    return Frame{
+        alleleFreq: $freq,
+        nAlleles: len($freq),
+        pairIdx: pairTable(len($freq)),
+        gi: $gi,
+        gj: $gj,
+        observed: $observed
+    };
 }
 
 # pairTable precomputes every allele pair's genotype index, so the innermost
@@ -598,50 +769,6 @@ func genotypeIndex(nAlleles as int, a as int, b as int) {
     return $lo * $nAlleles - ($lo * ($lo - 1)) // 2 + ($hi - $lo);
 }
 
-# withFamilies fills in the nuclear families and the individual-to-family
-# incidence lists the message passing walks.
-func withFamilies(ped as Pedigree, frame as Frame) {
-    def out as Frame init $frame;
-    for (def id in $ped.members) {
-        $out.incidence[$id] = [];
-        $out.founder[$id] = len($ped.members[$id].father) == 0;
-    }
-    def couples as Couples init familyCouples($ped);
-    def fathers as list of string init [];
-    def mothers as list of string init [];
-    def kids as list of list of string init [];
-    for (def n in 0..len($couples.pairs)) {
-        $fathers[] = $couples.pairs[$n][0];
-        $mothers[] = $couples.pairs[$n][1];
-        $kids[] = [];
-        $out = addIncidence($out, $couples.pairs[$n][0], $n);
-        $out = addIncidence($out, $couples.pairs[$n][1], $n);
-    }
-    for (def id in $ped.members) {
-        def p as Person init $ped.members[$id];
-        if (len($p.father) > 0) {
-            def pair as list of string init couple($p.father, $p.mother);
-            def n as int init indexOfCouple($couples, $pair[0], $pair[1]);
-            def row as list of string init $kids[$n];
-            $row[] = $id;
-            $kids[$n] = $row;
-            $out = addIncidence($out, $id, $n);
-        }
-    }
-    $out.famFather = $fathers;
-    $out.famMother = $mothers;
-    $out.famChildren = $kids;
-    return $out;
-}
-
-func addIncidence(frame as Frame, id as string, famIdx as int) {
-    def out as Frame init $frame;
-    def cur as list of int init $out.incidence[$id];
-    $cur[] = $famIdx;
-    $out.incidence[$id] = $cur;
-    return $out;
-}
-
 # --- the peeling ------------------------------------------------------------
 
 # founderProbability is the Hardy-Weinberg prior for a founder's genotype.
@@ -657,41 +784,77 @@ func founderProbability(frame as Frame, g as int) {
 # A child takes one allele from each parent, so only four genotypes are
 # reachable from a parental pair - one per combination of parental slots, each
 # with probability 1/4. Every sum over "all genotypes weighted by transmission"
-# is therefore a sum over those four, which is what these two helpers do. It is
-# exactly the transmission probability
+# is therefore a sum over those four. It is exactly the transmission probability
 #   P(child (x,y) | gf, gm) = T(gf,x) T(gm,y) + T(gf,y) T(gm,x)
 # written from the parents' side rather than the child's, and it turns the inner
 # loop from O(genotypes) into O(1).
 
-# penetrance is 1 for an untyped member and, for a typed one, 1 only on the
-# genotype actually observed.
-func penetrance(frame as Frame, id as string, g as int) {
-    if (not maps.has($frame.observed, $id)) {
-        return 1.0;
+# Messages holds the peeling's message vectors, indexed by node. It is a struct
+# because a struct parameter that is only read is borrowed, while a bare list
+# argument is deep-copied on every call - which made peeling quadratic.
+def struct Messages {
+    v as list of list of float
+};
+
+# peel is the likelihood at one locus: the product over components of the sum
+# of the root's message. It runs the message passing bottom-up over
+# `shape.order` instead of recursing, so a pedigree's depth costs no call
+# stack. `msgs[node]` is the message from a node to its `up` neighbour (for a
+# root, its whole component's vector), each computed exactly once.
+func peel(shape as Shape, frame as Frame) {
+    def n as int init len($shape.ids);
+    def msgs as Messages init Messages{v: []};
+    for (def k in 0..len($shape.order)) {
+        $msgs.v[] = [];
     }
-    if ($frame.observed[$id] == $g) {
-        return 1.0;
+    def k as int init len($shape.order) - 1;
+    while ($k >= 0) {
+        def node as int init $shape.order[$k];
+        if ($node < $n) {
+            $msgs.v[$node] = messageToFamily($shape, $frame, $msgs, $node);
+        } else {
+            $msgs.v[$node] = messageToIndividual(
+                $shape,
+                $frame,
+                $msgs,
+                $node - $n,
+                $shape.up[$node]);
+        }
+        $k = $k - 1;
     }
-    return 0.0;
+    def out as float init 1.0;
+    for (def root in $shape.roots) {
+        def total as float init 0.0;
+        for (def g in 0..len($frame.gi)) {
+            $total = $total + $msgs.v[$root][$g];
+        }
+        $out = $out * $total;
+    }
+    return $out;
 }
 
-# messageToFamily summarises everything hanging off `id` other than family
-# `skip` into a vector over `id`'s genotypes: its own observation, its founder
-# prior if it has one, and the messages from its other families.
-func messageToFamily(frame as Frame, id as string, skip as int) {
+# messageToFamily summarises everything hanging off member `i` other than its
+# `up` family into a vector over `i`'s genotypes: its own observation, its
+# founder prior if it has one, and the messages from its other families.
+func messageToFamily(shape as Shape, frame as Frame, msgs as Messages, i as int) {
+    def n as int init len($shape.ids);
+    def obs as int init $frame.observed[$i];
     def out as list of float init [];
     for (def g in 0..len($frame.gi)) {
-        def v as float init penetrance($frame, $id, $g);
-        if ($frame.founder[$id]) {
+        def v as float init 1.0;
+        if ($obs >= 0 and $obs != $g) {
+            $v = 0.0;
+        }
+        if ($shape.founder[$i]) {
             $v = $v * founderProbability($frame, $g);
         }
         $out[] = $v;
     }
-    for (def fam in $frame.incidence[$id]) {
-        if ($fam != $skip) {
-            def inbound as list of float init messageToIndividual($frame, $fam, $id);
+    for (def fam in $shape.incidence[$i]) {
+        def node as int init $n + $fam;
+        if ($node != $shape.up[$i]) {
             for (def g in 0..len($out)) {
-                $out[$g] = $out[$g] * $inbound[$g];
+                $out[$g] = $out[$g] * $msgs.v[$node][$g];
             }
         }
     }
@@ -699,82 +862,103 @@ func messageToFamily(frame as Frame, id as string, skip as int) {
 }
 
 # messageToIndividual summarises family `fam` - its other members and
-# everything hanging off them - into a vector over `id`'s genotypes. `id` is
-# either one of the two parents or one of the children, and the two cases sum
-# over different variables.
-func messageToIndividual(frame as Frame, fam as int, id as string) {
-    if ($id == $frame.famFather[$fam] or $id == $frame.famMother[$fam]) {
-        return messageToParent($frame, $fam, $id);
+# everything hanging off them - into a vector over member `target`'s genotypes.
+# `target` is either one of the two parents or one of the children, and the two
+# cases sum over different variables.
+func messageToIndividual(
+    shape as Shape,
+    frame as Frame,
+    msgs as Messages,
+    fam as int,
+    target as int) {
+    def a as int init $shape.parentA[$fam];
+    def b as int init $shape.parentB[$fam];
+    if ($target == $a or $target == $b) {
+        return messageToParent($shape, $frame, $msgs, $fam, $target);
     }
-    return messageToChild($frame, $fam, $id);
+    return messageToChild($shape, $frame, $msgs, $fam, $target);
 }
 
 # childWeights builds, for one nuclear family, the matrix
 #
-#   prod[gf][gm] = product over the given children of
-#                  P(that child's whole subtree | parents gf, gm)
+#   w[r * len(cols) + c] = product over the children other than `exclude` of
+#                          P(that child's whole subtree | parents rows[r], cols[c])
 #
-# Computing it once per family is the point. The per-child factor is a sum over
-# the four genotypes a child of (gf, gm) can carry - one allele from each
-# parent, a quarter each - which is the transmission probability
-#   P(child (x,y) | gf, gm) = T(gf,x) T(gm,y) + T(gf,y) T(gm,x)
-# written from the parents' side, and is exact.
-#
-# The children loop is outermost deliberately. Binding a child's message vector
-# inside the doubly-nested sum copies the whole vector on every iteration, and
-# that copying - not the arithmetic - was the module's dominant cost.
-func childWeights(frame as Frame, kids as list of list of float) {
-    def size as int init len($frame.gi);
-    def prod as list of list of float init [];
-    for (def gf in 0..$size) {
-        def row as list of float init [];
-        for (def gm in 0..$size) {
-            $row[] = 1.0;
+# `rows` and `cols` are the genotypes of the first and the second parent the
+# caller reads; a typed parent's message is non-zero at one genotype, so only
+# those cells are filled (a family with both parents typed is one cell, not
+# G^2). The per-child factor is a sum over the four genotypes a child of
+# (gf, gm) can carry - one allele from each parent, a quarter each - which is
+# the transmission probability written from the parents' side, and is exact.
+# The children's messages are read in place from `msgs`.
+func childWeights(
+    shape as Shape,
+    frame as Frame,
+    msgs as Messages,
+    fam as int,
+    exclude as int,
+    rows as list of int,
+    cols as list of int) {
+    def nc as int init len($cols);
+    def prod as list of float init [];
+    for (def k in 0..(len($rows) * $nc)) {
+        $prod[] = 1.0;
+    }
+    for (def c in $shape.children[$fam]) {
+        if ($c != $exclude) {
+            for (def r in 0..len($rows)) {
+                def fa as int init $frame.gi[$rows[$r]];
+                def fb as int init $frame.gj[$rows[$r]];
+                for (def k in 0..$nc) {
+                    def ma as int init $frame.gi[$cols[$k]];
+                    def mb as int init $frame.gj[$cols[$k]];
+                    def share as float init $msgs.v[$c][$frame.pairIdx[$fa][$ma]] +
+                        $msgs.v[$c][$frame.pairIdx[$fa][$mb]] +
+                        $msgs.v[$c][$frame.pairIdx[$fb][$ma]] +
+                        $msgs.v[$c][$frame.pairIdx[$fb][$mb]];
+                    def cell as int init $r * $nc + $k;
+                    $prod[$cell] = $prod[$cell] * 0.25 * $share;
+                }
+            }
         }
-        $prod[] = $row;
     }
-    def out as list of list of float init $prod;
-    for (def msg in $kids) {
-        $out = foldChild($frame, $out, $msg);
-    }
-    return $out;
+    return $prod;
 }
 
-# foldChild multiplies one child's contribution into every cell of the matrix.
-func foldChild(frame as Frame, prod as list of list of float, msg as list of float) {
-    def out as list of list of float init $prod;
-    def size as int init len($frame.gi);
-    def idx as list of list of int init $frame.pairIdx;
-    for (def gf in 0..$size) {
-        def fa as int init $frame.gi[$gf];
-        def fb as int init $frame.gj[$gf];
-        for (def gm in 0..$size) {
-            def ma as int init $frame.gi[$gm];
-            def mb as int init $frame.gj[$gm];
-            def share as float init $msg[$idx[$fa][$ma]] + $msg[$idx[$fa][$mb]] +
-                $msg[$idx[$fb][$ma]] + $msg[$idx[$fb][$mb]];
-            $out[$gf][$gm] = $out[$gf][$gm] * 0.25 * $share;
+# support lists the genotypes at which node `node`'s message is non-zero, in
+# ascending order.
+func support(msgs as Messages, node as int) {
+    def out as list of int init [];
+    for (def g in 0..len($msgs.v[$node])) {
+        if ($msgs.v[$node][$g] > 0.0) {
+            $out[] = $g;
         }
     }
     return $out;
 }
 
 # messageToParent: sum over the spouse's genotypes, weighting each by the
-# spouse's own message and by every child's summarised transmission.
-func messageToParent(frame as Frame, fam as int, id as string) {
-    def spouse as string init $frame.famMother[$fam];
-    if ($id == $spouse) {
-        $spouse = $frame.famFather[$fam];
+# spouse's own message and by every child's summarised transmission. The
+# target's genotype is the first parent in `childWeights` whichever parent it
+# is (transmission is symmetric), and only the spouse's non-zero genotypes are
+# filled and summed.
+func messageToParent(shape as Shape, frame as Frame, msgs as Messages, fam as int, target as int) {
+    def spouse as int init $shape.parentB[$fam];
+    if ($target == $spouse) {
+        $spouse = $shape.parentA[$fam];
     }
-    def up as list of float init messageToFamily($frame, $spouse, $fam);
-    def prod as list of list of float init childWeights($frame, childMessages($frame, $fam, ""));
+    def all as list of int init [];
+    for (def g in 0..len($frame.gi)) {
+        $all[] = $g;
+    }
+    def cols as list of int init support($msgs, $spouse);
+    def nc as int init len($cols);
+    def prod as list of float init childWeights($shape, $frame, $msgs, $fam, -1, $all, $cols);
     def out as list of float init [];
     for (def g in 0..len($frame.gi)) {
         def total as float init 0.0;
-        for (def gs in 0..len($frame.gi)) {
-            if ($up[$gs] > 0.0) {
-                $total = $total + $up[$gs] * $prod[$g][$gs];
-            }
+        for (def k in 0..$nc) {
+            $total = $total + $msgs.v[$spouse][$cols[$k]] * $prod[$g * $nc + $k];
         }
         $out[] = $total;
     }
@@ -783,119 +967,41 @@ func messageToParent(frame as Frame, fam as int, id as string) {
 
 # messageToChild: sum over both parents' genotypes, weighting each pair by the
 # parents' own messages, by the child's transmission, and by every sibling's
-# summarised transmission.
-func messageToChild(frame as Frame, fam as int, id as string) {
-    def upFather as list of float init messageToFamily($frame, $frame.famFather[$fam], $fam);
-    def upMother as list of float init messageToFamily($frame, $frame.famMother[$fam], $fam);
-    def prod as list of list of float init childWeights($frame, childMessages($frame, $fam, $id));
+# summarised transmission. A quarter of each pair's weight goes to each of the
+# four genotypes a child of that pair can carry. Pairs where either parent's
+# message is zero contribute nothing and are skipped.
+func messageToChild(shape as Shape, frame as Frame, msgs as Messages, fam as int, target as int) {
+    def a as int init $shape.parentA[$fam];
+    def b as int init $shape.parentB[$fam];
+    def rows as list of int init support($msgs, $a);
+    def cols as list of int init support($msgs, $b);
+    def nc as int init len($cols);
+    def prod as list of float init childWeights($shape, $frame, $msgs, $fam, $target, $rows, $cols);
     def out as list of float init [];
     for (def g in 0..len($frame.gi)) {
         $out[] = 0.0;
     }
-    for (def gf in 0..len($frame.gi)) {
-        if ($upFather[$gf] > 0.0) {
-            $out = overMotherGenotypes($frame, $out, $prod, $upFather[$gf], $upMother, $gf);
-        }
-    }
-    return $out;
-}
-
-# overMotherGenotypes folds in every maternal genotype for one fixed paternal
-# genotype, which keeps `messageToChild`'s double sum flat.
-#
-# The scatter is written out here rather than delegated. `acc` is mutated, so
-# handing it to a helper and taking the result back would copy the whole vector
-# once per maternal genotype; held here it is copied once per paternal genotype.
-func overMotherGenotypes(
-    frame as Frame,
-    acc as list of float,
-    prod as list of list of float,
-    wFather as float,
-    upMother as list of float,
-    gf as int) {
-    def out as list of float init $acc;
-    def idx as list of list of int init $frame.pairIdx;
-    def fa as int init $frame.gi[$gf];
-    def fb as int init $frame.gj[$gf];
-    for (def gm in 0..len($frame.gi)) {
-        def w as float init $wFather * $upMother[$gm] * $prod[$gf][$gm];
-        if ($w > 0.0) {
-            # A quarter of the weight to each of the four genotypes a child of
-            # this pair can carry.
-            def share as float init 0.25 * $w;
-            def ma as int init $frame.gi[$gm];
-            def mb as int init $frame.gj[$gm];
-            def one as int init $idx[$fa][$ma];
-            def two as int init $idx[$fa][$mb];
-            def three as int init $idx[$fb][$ma];
-            def four as int init $idx[$fb][$mb];
-            $out[$one] = $out[$one] + $share;
-            $out[$two] = $out[$two] + $share;
-            $out[$three] = $out[$three] + $share;
-            $out[$four] = $out[$four] + $share;
-        }
-    }
-    return $out;
-}
-
-# childMessages collects the inbound message of every child of `fam` except
-# `exclude`.
-func childMessages(frame as Frame, fam as int, exclude as string) {
-    def out as list of list of float init [];
-    for (def c in $frame.famChildren[$fam]) {
-        if ($c != $exclude) {
-            $out[] = messageToFamily($frame, $c, $fam);
-        }
-    }
-    return $out;
-}
-
-# componentRoots picks one member from each connected component of the
-# pedigree, so a pedigree that is several unconnected families is peeled once
-# per family and the results multiplied.
-func componentRoots(ped as Pedigree, frame as Frame) {
-    def seen as map of string to bool init {};
-    def roots as list of string init [];
-    for (def id in $ped.members) {
-        if (not maps.has($seen, $id)) {
-            $roots[] = $id;
-            $seen = markComponent($frame, $seen, $id);
-        }
-    }
-    return $roots;
-}
-
-# markComponent adds every member reachable from `start` through shared
-# families to `seen`.
-func markComponent(frame as Frame, seen as map of string to bool, start as string) {
-    def out as map of string to bool init $seen;
-    # The frontier is consumed by advancing an index rather than by lists.pop,
-    # which copies the whole list on every pass. Reachability does not care
-    # about the order, so a queue marks the same members a stack would.
-    def queue as list of string init [$start];
-    def head as int init 0;
-    while ($head < len($queue)) {
-        def cur as string init $queue[$head];
-        $head = $head + 1;
-        if (not maps.has($out, $cur)) {
-            $out[$cur] = true;
-            for (def id in familyMembers($frame, $cur)) {
-                $queue[] = $id;
+    for (def r in 0..len($rows)) {
+        def gf as int init $rows[$r];
+        def wFather as float init $msgs.v[$a][$gf];
+        def fa as int init $frame.gi[$gf];
+        def fb as int init $frame.gj[$gf];
+        for (def k in 0..$nc) {
+            def gm as int init $cols[$k];
+            def w as float init $wFather * $msgs.v[$b][$gm] * $prod[$r * $nc + $k];
+            if ($w > 0.0) {
+                def share as float init 0.25 * $w;
+                def ma as int init $frame.gi[$gm];
+                def mb as int init $frame.gj[$gm];
+                def one as int init $frame.pairIdx[$fa][$ma];
+                def two as int init $frame.pairIdx[$fa][$mb];
+                def three as int init $frame.pairIdx[$fb][$ma];
+                def four as int init $frame.pairIdx[$fb][$mb];
+                $out[$one] = $out[$one] + $share;
+                $out[$two] = $out[$two] + $share;
+                $out[$three] = $out[$three] + $share;
+                $out[$four] = $out[$four] + $share;
             }
-        }
-    }
-    return $out;
-}
-
-# familyMembers lists everyone sharing a nuclear family with `id` - the
-# neighbours a component walk visits next.
-func familyMembers(frame as Frame, id as string) {
-    def out as list of string init [];
-    for (def fam in $frame.incidence[$id]) {
-        $out[] = $frame.famFather[$fam];
-        $out[] = $frame.famMother[$fam];
-        for (def c in $frame.famChildren[$fam]) {
-            $out[] = $c;
         }
     }
     return $out;
@@ -915,15 +1021,18 @@ func familyMembers(frame as Frame, id as string) {
  * @param locus {string} the locus name
  * @return {float} the likelihood at this locus
  * @throws {Error} kind "pedigree" if the pedigree is malformed, looped or
- *   empty, or a member's genotype is at another locus; kind "forensicgenetics"
- *   if the database does not cover the locus
+ *   empty, a member's genotype is at another locus, the typed members show
+ *   more than `MAX_PEDIGREE_ALLELES` alleles, or the observed alleles' floored
+ *   frequencies sum past 1; kind "forensicgenetics" if a member is typed and
+ *   the database does not cover the locus (with nobody typed the likelihood
+ *   is 1)
  */
 export func locusLikelihood(
     ped as Pedigree,
     genotypes as map of string to forensics.Genotype,
     db as forensics.FrequencyDb,
     locus as string) {
-    validate($ped);
+    def shape as Shape init shapeOf($ped);
     if (len($ped.members) == 0) {
         fail("pedigree '" + $ped.name + "' has no members");
     }
@@ -933,17 +1042,17 @@ export func locusLikelihood(
                 "' but the likelihood was asked for at '" + $locus + "'");
         }
     }
-    def frame as Frame init buildFrame($ped, $db, $locus, $genotypes);
-    def out as float init 1.0;
-    for (def root in componentRoots($ped, $frame)) {
-        def msg as list of float init messageToFamily($frame, $root, -1);
-        def total as float init 0.0;
-        for (def g in 0..len($frame.gi)) {
-            $total = $total + $msg[$g];
-        }
-        $out = $out * $total;
-    }
-    return $out;
+    return peel($shape, buildFrame($shape, $db, $locus, $genotypes));
+}
+
+# likelihoodAt is `locusLikelihood` for a pedigree already validated into
+# `shape`, with genotypes from `genotypesAt` (all at `locus`).
+func likelihoodAt(
+    shape as Shape,
+    genotypes as map of string to forensics.Genotype,
+    db as forensics.FrequencyDb,
+    locus as string) {
+    return peel($shape, buildFrame($shape, $db, $locus, $genotypes));
 }
 
 # --- across a panel ---------------------------------------------------------
@@ -1024,10 +1133,25 @@ func genotypesAt(ped as Pedigree, profiles as map of string to forensics.Profile
  * @param db {FrequencyDb} the reference frequencies
  * @return {float} the likelihood
  * @throws {Error} kind "pedigree" if no locus is usable, if a member is typed
- *   at a locus the database does not cover, or if the pedigree is malformed
- *   or looped
+ *   at a locus the database does not cover, if the pedigree is malformed or
+ *   looped, or as `locusLikelihood` at any locus
  */
 export func pedigreeLikelihood(
+    ped as Pedigree,
+    profiles as map of string to forensics.Profile,
+    db as forensics.FrequencyDb) {
+    def loci as list of string init panelLoci($ped, $profiles, $db);
+    def shape as Shape init shapeOf($ped);
+    def out as float init 1.0;
+    for (def locus in $loci) {
+        $out = $out * likelihoodAt($shape, genotypesAt($ped, $profiles, $locus), $db, $locus);
+    }
+    return $out;
+}
+
+# panelLoci is `pedigreeLoci` after the checks every panel function makes
+# first: no member typed at an uncovered locus, and at least one usable locus.
+func panelLoci(
     ped as Pedigree,
     profiles as map of string to forensics.Profile,
     db as forensics.FrequencyDb) {
@@ -1037,11 +1161,7 @@ export func pedigreeLikelihood(
         fail("pedigree '" + $ped.name +
             "': no locus is both covered by the database and typed in a member");
     }
-    def out as float init 1.0;
-    for (def locus in $loci) {
-        $out = $out * locusLikelihood($ped, genotypesAt($ped, $profiles, $locus), $db, $locus);
-    }
-    return $out;
+    return $loci;
 }
 
 /**
@@ -1058,19 +1178,11 @@ export func log10PedigreeLikelihood(
     ped as Pedigree,
     profiles as map of string to forensics.Profile,
     db as forensics.FrequencyDb) {
-    requireCovered($ped, $profiles, $db);
-    def loci as list of string init pedigreeLoci($ped, $profiles, $db);
-    if (len($loci) == 0) {
-        fail("pedigree '" + $ped.name +
-            "': no locus is both covered by the database and typed in a member");
-    }
+    def loci as list of string init panelLoci($ped, $profiles, $db);
+    def shape as Shape init shapeOf($ped);
     def out as float init 0.0;
     for (def locus in $loci) {
-        def l as float init locusLikelihood(
-            $ped,
-            genotypesAt($ped, $profiles, $locus),
-            $db,
-            $locus);
+        def l as float init likelihoodAt($shape, genotypesAt($ped, $profiles, $locus), $db, $locus);
         if ($l <= 0.0) {
             fail("pedigree '" + $ped.name + "' has likelihood zero at locus '" + $locus +
                 "', so it has no logarithm");
@@ -1080,23 +1192,21 @@ export func log10PedigreeLikelihood(
     return $out;
 }
 
-/**
- * The likelihood ratio of two pedigrees over the same typed people.
- *
- * Taken locus by locus over the numerator's `pedigreeLoci`, so it stays in
- * range where either likelihood would underflow. Both pedigrees must type the
- * same members; untyped members may differ, which is how a hypothesis adds an
- * unknown alternative father.
- * @param numerator {Pedigree} the first hypothesis
- * @param denominator {Pedigree} the second hypothesis
- * @param profiles {map of string to Profile} member id -> that member's profile
- * @param db {FrequencyDb} the reference frequencies
- * @return {float} the likelihood ratio
- * @throws {Error} kind "pedigree" if the two pedigrees type different members,
- *   if a typed member carries a locus the database does not cover, if no
- *   locus is usable, or if the denominator has likelihood zero
- */
-export func pedigreeLR(
+# FLOAT_MAX is the largest finite float. The interpreter raises a runtime error
+# on a quotient or product past it, so `pedigreeLR` checks first.
+def const FLOAT_MAX as float init 1.7976931348623157e308;
+
+# LocusPair is one locus's likelihood under each hypothesis.
+def struct LocusPair {
+    locus as string,
+    over as float,
+    under as float
+};
+
+# ratioLoci validates both pedigrees once and returns, per usable locus, the
+# numerator's and the denominator's likelihood. The denominator is validated
+# and computed first, so its errors take precedence.
+func ratioLoci(
     numerator as Pedigree,
     denominator as Pedigree,
     profiles as map of string to forensics.Profile,
@@ -1112,10 +1222,12 @@ export func pedigreeLR(
     if (len($loci) == 0) {
         fail("no locus is both covered by the database and typed in a member");
     }
-    def out as float init 1.0;
+    def shapeB as Shape init shapeOf($denominator);
+    def shapeA as Shape init shapeOf($numerator);
+    def out as list of LocusPair init [];
     for (def locus in $loci) {
-        def under as float init locusLikelihood(
-            $denominator,
+        def under as float init likelihoodAt(
+            $shapeB,
             genotypesAt($denominator, $profiles, $locus),
             $db,
             $locus);
@@ -1123,12 +1235,79 @@ export func pedigreeLR(
             fail("pedigree '" + $denominator.name + "' has likelihood zero at locus '" + $locus +
                 "', so no ratio is defined there");
         }
-        def over as float init locusLikelihood(
-            $numerator,
+        def over as float init likelihoodAt(
+            $shapeA,
             genotypesAt($numerator, $profiles, $locus),
             $db,
             $locus);
-        $out = $out * ($over / $under);
+        $out[] = LocusPair{locus: $locus, over: $over, under: $under};
+    }
+    return $out;
+}
+
+/**
+ * The likelihood ratio of two pedigrees over the same typed people.
+ *
+ * Taken locus by locus over the numerator's `pedigreeLoci`, so it stays finite
+ * where either likelihood alone would underflow. The product of the per-locus
+ * ratios can still exceed the float range on a long panel; that throws, and
+ * `log10PedigreeLR` gives the logarithm instead. Both pedigrees must type the
+ * same members; untyped members may differ, which is how a hypothesis adds an
+ * unknown alternative father.
+ * @param numerator {Pedigree} the first hypothesis
+ * @param denominator {Pedigree} the second hypothesis
+ * @param profiles {map of string to Profile} member id -> that member's profile
+ * @param db {FrequencyDb} the reference frequencies
+ * @return {float} the likelihood ratio
+ * @throws {Error} kind "pedigree" if the two pedigrees type different members,
+ *   if a typed member carries a locus the database does not cover, if no
+ *   locus is usable, if the denominator has likelihood zero, if either
+ *   pedigree is malformed or looped, or if the ratio exceeds the float range
+ */
+export func pedigreeLR(
+    numerator as Pedigree,
+    denominator as Pedigree,
+    profiles as map of string to forensics.Profile,
+    db as forensics.FrequencyDb) {
+    def out as float init 1.0;
+    for (def pair in ratioLoci($numerator, $denominator, $profiles, $db)) {
+        # Neither the quotient nor the product may leave the float range: an
+        # under-1 divisor bounds the first check's product, an over-1
+        # accumulator the second's quotient, so both checks are finite.
+        if (($pair.under < 1.0 and $pair.over > FLOAT_MAX * $pair.under) or
+            ($out > 1.0 and $pair.over / $pair.under > FLOAT_MAX / $out)) {
+            fail("the likelihood ratio of pedigrees '" + $numerator.name + "' and '" +
+                $denominator.name + "' exceeds the float range (above 1.8e308); use" +
+                " log10PedigreeLR");
+        }
+        $out = $out * ($pair.over / $pair.under);
+    }
+    return $out;
+}
+
+/**
+ * The base-10 logarithm of `pedigreeLR`, summed per locus so it neither
+ * overflows nor underflows where the ratio would.
+ * @param numerator {Pedigree} the first hypothesis
+ * @param denominator {Pedigree} the second hypothesis
+ * @param profiles {map of string to Profile} member id -> that member's profile
+ * @param db {FrequencyDb} the reference frequencies
+ * @return {float} log10 of the likelihood ratio
+ * @throws {Error} kind "pedigree" as for `pedigreeLR`, or if the numerator has
+ *   likelihood zero at a locus (the ratio is 0, which has no logarithm)
+ */
+export func log10PedigreeLR(
+    numerator as Pedigree,
+    denominator as Pedigree,
+    profiles as map of string to forensics.Profile,
+    db as forensics.FrequencyDb) {
+    def out as float init 0.0;
+    for (def pair in ratioLoci($numerator, $denominator, $profiles, $db)) {
+        if ($pair.over <= 0.0) {
+            fail("pedigree '" + $numerator.name + "' has likelihood zero at locus '" + $pair.locus +
+                "', so the ratio is 0 and has no logarithm");
+        }
+        $out = $out + (math.log10($pair.over) - math.log10($pair.under));
     }
     return $out;
 }

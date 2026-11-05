@@ -1,7 +1,7 @@
 # General pedigrees
 
 [Kinship](kinship.md) handles a pair. A missing person identified through two
-siblings and a niece, or an alleged father known only through his parents,
+siblings and a niece, or an alleged father typed only through his parents,
 needs the likelihood of the whole pedigree.
 
 ## Peeling
@@ -33,8 +33,18 @@ A founder's genotype prior is the population frequency. Everyone else names
 both parents: a member with one parent recorded throws, because the missing
 parent still contributes alleles. Parents may be added after the child.
 
-`sex` is `"m"`, `"f"` or `""`. It is recorded and not used: the autosomal
-calculation treats both parents alike.
+`sex` is `"m"`, `"f"` or `""`; the autosomal calculation ignores it.
+
+Each `withFounder` / `withChild` copies the pedigree. For hundreds of members
+or more, build in one pass with the same checks:
+
+```jennifer
+def ped as pedigree.Pedigree init pedigree.pedigreeOf("case 42", [
+    pedigree.Person{id: "GF", sex: "m", father: "", mother: ""},
+    pedigree.Person{id: "GM", sex: "f", father: "", mother: ""},
+    pedigree.Person{id: "FA", sex: "m", father: "GF", mother: "GM"}
+]);
+```
 
 ```jennifer
 pedigree.members($ped);            # ids, insertion order
@@ -97,9 +107,11 @@ def lr as float init pedigree.pedigreeLR($h1, $h2, $profiles, $db);
 pedigree.typedMembers($h1, $profiles);   # who contributes data
 ```
 
-The ratio is taken locus by locus, so it stays in range where either
-likelihood alone would underflow. Both pedigrees must type the same members,
-or the call throws; untyped members may differ, which is how a hypothesis adds
+The ratio is taken locus by locus, so it stays finite where either
+likelihood alone would underflow. The product can still pass the float
+maximum on a long panel; `pedigreeLR` then throws, and
+`pedigree.log10PedigreeLR` returns the sum of per-locus `log10` ratios. Both
+pedigrees must type the same members, or the call throws; untyped members may differ, which is how a hypothesis adds
 an unknown alternative father. A denominator likelihood of zero at any locus
 throws.
 
@@ -121,6 +133,9 @@ The pedigrees are built as in the [Quick start](../getting-started/quick-start.m
 `examples/pedigree.j` prints:
 
 ```
+typed in H1: ["GF", "GM", "MO", "CH"]
+typed in H2: ["GF", "GM", "MO", "CH"]
+
 locus       L(H1)          L(H2)          LR
 D3S1358      0.0000210529 0.0000111749 1.8839
 vWA          0.0000030558 0.0000026145 1.1688
@@ -132,13 +147,16 @@ TH01         0.0000013055 0.0000004047 3.2258
 D16S539      0.0000003625 0.0000003200 1.1328
 
 combined LR = 504.29
+log10 LR    = 2.703
+W (prior 0.5) = 0.99802093
 
 for contrast, the pairwise grandparent LR (GF vs CH alone) = 53.67
+Using both grandparents at once is worth far more than either alone.
 ```
 
 The pairwise question (is CH a grandchild of GF?) ignores GM and the
 constraint that both grandparents must jointly explain the child's paternal
-allele. Using both is worth about ten times as much here.
+allele. Using both gives an LR 9.4 times the pairwise one here.
 
 ## Correctness
 

@@ -19,7 +19,9 @@ and mutation constants, and struct fields are in the
   [Theta](../concepts/theta.md).
 - `HALF_SIBLINGS`, `GRANDPARENT` and `AVUNCULAR` have equal coefficients and
   give equal LRs.
-- `kinshipLR` and `kinshipLRAgainst` multiply over `pairLoci`;
+- `kinshipLR` and `kinshipLRAgainst` multiply over `pairLoci`; their
+  `log10KinshipLR...` forms (one per `kinshipLR` variant) sum `log10` of the
+  per-locus LRs, for panels whose product leaves the float range;
   `paternityIndex`, `paternityIndexWith` and `inconsistentLoci` over
   `trioLoci`. A locus not every profile carries is skipped; one they all carry
   but the table does not cover throws, so an exclusion cannot be dropped
@@ -30,9 +32,13 @@ and mutation constants, and struct fields are in the
   Published per-locus rates, other mutation models, a maternal model and
   silent alleles are in [`mutation`](mutation.md).
 - `mutationProbability` counts `k = max(1, round(|value(s) - value(t)|))`
-  steps; at rate 0 any change has probability 0 without counting steps.
+  steps, the difference taken exactly in decimal and halves rounded up
+  (`13.8 -> 32.3` is 19 steps); at rate 0 any change has probability 0
+  without counting steps.
 - `relationship` accepts coefficients in `[0, 1]` summing to 1 within 1e-9;
-  `mutationModel` and `withLocusRate` accept rates and decay in `[0, 1)`;
+  `mutationModel` and `withLocusRate` accept rates and decay in `[0, 1)`.
+  The joint, LR and mutation functions repeat these checks, so `Relationship`
+  and `MutationModel` literals get them too;
   `probabilityOfPaternityPrior` a prior in `(0, 1)`; the theta functions a
   theta in `[0, 1)`.
 
@@ -43,8 +49,10 @@ Formulae: [Formulae and sources](../project/formulae.md). Guides:
 
 `Error{kind: "kinship"}`, thrown for:
 
-- IBD coefficients outside `[0, 1]` or not summing to 1
-- a mutation rate or decay outside `[0, 1)`
+- IBD coefficients outside `[0, 1]` or not summing to 1, in `relationship` or
+  a `Relationship` literal
+- a mutation rate (the one in force at the locus) or decay outside `[0, 1)`,
+  in `mutationModel`, `withLocusRate` or a `MutationModel` literal
 - a step count between alleles that are not repeat counts, when the rate is
   above 0
 - a theta outside `[0, 1)` (the `...Theta` and `duo...` functions)
@@ -57,5 +65,8 @@ Formulae: [Formulae and sources](../project/formulae.md). Guides:
 - a maternal exclusion (the mother can transmit neither of the child's
   alleles)
 - a negative CPI, or a prior outside `(0, 1)`
+- a product over loci (kinship LR, trio or duo CPI) past the float maximum;
+  the kinship LRs have `log10` forms
+- an exclusion in a `log10KinshipLR...` function (ratio 0 has no logarithm)
 
 A locus the database lacks surfaces as the core's `"forensicgenetics"` error.

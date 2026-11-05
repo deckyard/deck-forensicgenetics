@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for pedigree.j. Run with `jennifer test pedigree_test.j`.
 #
@@ -617,4 +617,278 @@ func testPedigreeLociFollowTheDatabaseOrder() {
 func testAnEmptyProfileIsNotTyped() {
     def profiles as map of string to forensics.Profile init {"AF": forensics.profile("AF", [])};
     testing.assertEqual(typedMembers(trioPedigree(), $profiles), []);
+}
+
+# --- review fixes -------------------------------------------------------------
+
+func testAFlooredSumOfExactlyOneIsAccepted() {
+    # .05 + .55 + .3 + .1 is 1 but adds up to 1.0000000000000002 in floats,
+    # which was refused as past 1. Two unrelated typed founders:
+    #   2 * .05 * .55 * 2 * .3 * .1 = .055 * .06 = .0033
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("t"),
+        "L",
+        10000,
+        {"10": 0.05, "11": 0.55, "12": 0.3, "13": 0.1});
+    def p as Pedigree init withFounder(withFounder(pedigree("p"), "A", "m"), "B", "f");
+    near(locusLikelihood($p, {"A": gt("10", "11"), "B": gt("12", "13")}, $db, "L"), 0.0033);
+}
+
+# chain is `n` generations: C1 is the child of the founders F0 and M0, and
+# each C(i+1) is the child of C(i) and a founder spouse S(i+1).
+func chain(n as int) {
+    def m as map of string to Person init {};
+    $m["F0"] = Person{id: "F0", sex: "m", father: "", mother: ""};
+    $m["M0"] = Person{id: "M0", sex: "f", father: "", mother: ""};
+    def prevF as string init "F0";
+    def prevM as string init "M0";
+    for (def i in 1..($n + 1)) {
+        $m["C{$i}"] = Person{id: "C{$i}", sex: "m", father: $prevF, mother: $prevM};
+        $m["S{$i}"] = Person{id: "S{$i}", sex: "f", father: "", mother: ""};
+        $prevF = "C{$i}";
+        $prevM = "S{$i}";
+    }
+    return Pedigree{name: "chain", members: $m};
+}
+
+func testADeepPedigreeNeedsNoCallStack() {
+    # 1200 generations (recursive peeling ran out of call stack near 1000).
+    # F0 10/11 and C1200 12/13 share an allele IBD with probability about
+    # 2^-1200, so the likelihood is the unrelated product to float precision:
+    #   (2 * .1 * .2) * (2 * .3 * .4) = .04 * .24 = .0096
+    def g as map of string to forensics.Genotype init {
+        "F0": gt("10", "11"),
+        "C1200": gt("12", "13")
+    };
+    near(locusLikelihood(chain(1200), $g, fixture(), "L"), 0.0096);
+}
+
+# farPanel builds `n` loci listing only allele 11, so an observed 10 scores
+# the floor 5/20000 = .00025.
+func farPanel(n as int) {
+    def out as forensics.FrequencyDb init forensics.db("t");
+    for (def i in 0..$n) {
+        $out = forensics.withLocus($out, "L{$i}", 10000, {"11": 0.5});
+    }
+    return $out;
+}
+
+func farProfile(id as string, n as int, a as string, b as string) {
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..$n) {
+        $gs[] = forensics.genotype("L{$i}", $a, $b);
+    }
+    return forensics.profile($id, $gs);
+}
+
+# fatherOf: AF is CH's father, the mother an untyped founder. Against
+# unrelatedPair("AF", "CH") with AF and CH both 10/10 the LR per locus is
+#   P(CH | AF) / P(CH) = p10 / p10^2 = 1 / .00025 = 4000,
+# so 100 loci give 4000^100 = 10^360.2.
+func fatherOf() {
+    return withChild(
+        withFounder(withFounder(pedigree("duo"), "AF", "m"), "MO", "f"),
+        "CH",
+        "m",
+        "AF",
+        "MO");
+}
+
+func pedigreeLrPastTheFloatRange() {
+    def profiles as map of string to forensics.Profile init {
+        "AF": farProfile("AF", 100, "10", "10"),
+        "CH": farProfile("CH", 100, "10", "10")
+    };
+    pedigreeLR(fatherOf(), unrelatedPair("AF", "CH"), $profiles, farPanel(100));
+}
+
+func testPedigreeLrPastTheFloatRangeHasALog10Form() {
+    # Before the fix: a runtime float-overflow error.
+    testing.assertThrows("pedigreeLrPastTheFloatRange", "pedigree");
+    def profiles as map of string to forensics.Profile init {
+        "AF": farProfile("AF", 100, "10", "10"),
+        "CH": farProfile("CH", 100, "10", "10")
+    };
+    near(
+        log10PedigreeLR(fatherOf(), unrelatedPair("AF", "CH"), $profiles, farPanel(100)),
+        100.0 * math.log10(4000.0));
+}
+
+func log10PedigreeLrOfAnExclusion() {
+    # AF 10/10 cannot father CH 11/11: the numerator is 0 at L.
+    def profiles as map of string to forensics.Profile init {
+        "AF": one("AF", "10", "10"),
+        "CH": one("CH", "11", "11")
+    };
+    log10PedigreeLR(fatherOf(), unrelatedPair("AF", "CH"), $profiles, fixture());
+}
+
+func testLog10PedigreeLrRefusesAnExclusion() {
+    testing.assertThrows("log10PedigreeLrOfAnExclusion", "pedigree");
+}
+
+# --- round 2 review fixes ---------------------------------------------------
+
+# literalTrio is the trio as a Pedigree literal, with CH's parents as given.
+func literalTrio(father as string, mother as string) {
+    return Pedigree{
+        name: "lit",
+        members: {
+            "AF": Person{id: "AF", sex: "m", father: "", mother: ""},
+            "MO": Person{id: "MO", sex: "f", father: "", mother: ""},
+            "CH": Person{id: "CH", sex: "m", father: $father, mother: $mother}
+        }
+    };
+}
+
+func motherOnlyLikelihood() {
+    # MO 10/10, CH 11/11: a maternal exclusion, L = 0. Treated as a founder,
+    # CH gave .01 * .04 = .0004.
+    locusLikelihood(
+        literalTrio("", "MO"),
+        {"MO": gt("10", "10"), "CH": gt("11", "11")},
+        fixture(),
+        "L");
+}
+
+func fatherOnlyLiteral() {
+    validate(literalTrio("AF", ""));
+}
+
+func sameParentLiteral() {
+    validate(literalTrio("MO", "MO"));
+}
+
+func messageOf(name as string) {
+    def caught as string init "";
+    try {
+        if ($name == "motherOnlyLikelihood") {
+            motherOnlyLikelihood();
+        } elseif ($name == "fatherOnlyLiteral") {
+            fatherOnlyLiteral();
+        } elseif ($name == "sameParentLiteral") {
+            sameParentLiteral();
+        } else {
+            tooManyAlleles();
+        }
+    } catch (e) {
+        $caught = $e.message;
+    }
+    return $caught;
+}
+
+func testALiteralWithOneParentIsRejected() {
+    testing.assertThrows("motherOnlyLikelihood", "pedigree");
+    testing.assertThrows("fatherOnlyLiteral", "pedigree");
+    testing.assertContains(messageOf("motherOnlyLikelihood"), "must name both parents or neither");
+    testing.assertContains(messageOf("fatherOnlyLiteral"), "must name both parents or neither");
+    testing.assertFalse(isFounder(literalTrio("", "MO"), "CH"));
+    testing.assertFalse(isSimple(literalTrio("", "MO")));
+}
+
+func testALiteralWithOneIdForBothParentsSaysSo() {
+    testing.assertThrows("sameParentLiteral", "pedigree");
+    testing.assertContains(messageOf("sameParentLiteral"), "names 'MO' as both parents");
+}
+
+# untypedCouple is founders F and M with `k` children C0..C(k-1).
+func untypedCouple(k as int) {
+    def p as Pedigree init withFounder(withFounder(pedigree("d"), "F", "m"), "M", "f");
+    for (def i in 0..$k) {
+        $p = withChild($p, "C{$i}", "", "F", "M");
+    }
+    return $p;
+}
+
+func tooManyAlleles() {
+    # Eleven typed children with pairwise-distinct alleles show 22 > 20.
+    def g as map of string to forensics.Genotype init {};
+    for (def i in 0..11) {
+        $g["C{$i}"] = forensics.genotype("L", "{100 + 2 * $i}", "{101 + 2 * $i}");
+    }
+    locusLikelihood(
+        untypedCouple(11),
+        $g,
+        forensics.withLocus(forensics.db("t"), "L", 100000, {"1": 0.5}),
+        "L");
+}
+
+func testTooManyAllelesAtALocusThrows() {
+    testing.assertThrows("tooManyAlleles", "pedigree");
+    testing.assertContains(messageOf("tooManyAlleles"), "MAX_PEDIGREE_ALLELES (20)");
+    # At the limit: ten unrelated founders show 20 unlisted alleles, each at
+    # the floor f = 5 / 200000, so L = (2 f^2)^10.
+    def p as Pedigree init pedigree("f");
+    def g as map of string to forensics.Genotype init {};
+    for (def i in 0..10) {
+        $p = withFounder($p, "P{$i}", "");
+        $g["P{$i}"] = forensics.genotype("L", "{100 + 2 * $i}", "{101 + 2 * $i}");
+    }
+    def f as float init 5.0 / 200000.0;
+    def l as float init locusLikelihood(
+        $p,
+        $g,
+        forensics.withLocus(forensics.db("t"), "L", 100000, {"1": 0.5}),
+        "L");
+    near($l / math.pow(2.0 * $f * $f, 10.0), 1.0);
+}
+
+func testTypedParentsSkipNothingTheySum() {
+    # Typed parents make childWeights fill one cell, a typed spouse one
+    # column. AF 10/11, MO 12/13 typed; children C1 untyped with typed child
+    # G1 (C1 x founder W 10/10), C2 10/12. G1 10/12:
+    #   P(C2 10/12 | AF, MO) = 1/4
+    #   C1 in {10/12, 10/13, 11/12, 11/13}, 1/4 each; G1 gets 10 from W (1)
+    #   and 12 from C1: 1/2 for 10/12 and 11/12, 0 otherwise -> 1/4.
+    #   L = (2 .1 .2)(2 .3 .4)(.1^2) * 1/4 * 1/4 = .04 * .24 * .01 / 16
+    def p as Pedigree init withFounder(
+        withFounder(withFounder(pedigree("t"), "AF", "m"), "MO", "f"),
+        "W",
+        "f");
+    $p = withChild(withChild($p, "C1", "m", "AF", "MO"), "C2", "f", "AF", "MO");
+    $p = withChild($p, "G1", "m", "C1", "W");
+    def g as map of string to forensics.Genotype init {
+        "AF": gt("10", "11"),
+        "MO": gt("12", "13"),
+        "W": gt("10", "10"),
+        "C2": gt("10", "12"),
+        "G1": gt("10", "12")
+    };
+    near(locusLikelihood($p, $g, fixture(), "L"), 0.04 * 0.24 * 0.01 / 16.0);
+}
+
+func pedigreeOfMotherOnly() {
+    pedigreeOf(
+        "p",
+        [
+            Person{id: "MO", sex: "f", father: "", mother: ""},
+            Person{id: "CH", sex: "m", father: "", mother: "MO"}
+        ]);
+}
+
+func pedigreeOfDuplicate() {
+    pedigreeOf(
+        "p",
+        [
+            Person{id: "A", sex: "f", father: "", mother: ""},
+            Person{id: "A", sex: "m", father: "", mother: ""}
+        ]);
+}
+
+func pedigreeOfBadSex() {
+    pedigreeOf("p", [Person{id: "A", sex: "x", father: "", mother: ""}]);
+}
+
+func testPedigreeOfMatchesTheFold() {
+    def built as Pedigree init pedigreeOf(
+        "trio",
+        [
+            Person{id: "AF", sex: "m", father: "", mother: ""},
+            Person{id: "MO", sex: "f", father: "", mother: ""},
+            Person{id: "CH", sex: "m", father: "AF", mother: "MO"}
+        ]);
+    testing.assertEqual($built, trioPedigree());
+    testing.assertThrows("pedigreeOfMotherOnly", "pedigree");
+    testing.assertThrows("pedigreeOfDuplicate", "pedigree");
+    testing.assertThrows("pedigreeOfBadSex", "pedigree");
 }

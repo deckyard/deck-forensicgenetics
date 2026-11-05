@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for kinship.j. Run with `jennifer test kinship_test.j`.
 #
@@ -603,7 +603,9 @@ func testTheSamplingFormulaReducesToTheProductRuleAtThetaZero() {
         for (def j in 0..len($gs)) {
             for (def k in 0..len($rels)) {
                 near(
-                    jointTheta($fdb, $gs[$i], $gs[$j], $rels[$k], 0.0),
+                    thetaJoint(
+                        thetaTerms(pairFreqs($fdb, $gs[$i], $gs[$j]), $gs[$i], $gs[$j], 0.0),
+                        $rels[$k]),
                     jointGenotypeProbability($fdb, $gs[$i], $gs[$j], $rels[$k]));
             }
         }
@@ -614,13 +616,14 @@ func testTheSamplingFormulaReducesToTheProductRuleAtThetaZero() {
 }
 
 func testDrawProbabilityIsTheSamplingFormula() {
+    def f as Freqs init freqsOf(fixture(), "L", ["10", "12"]);
     # First draw: (1 - theta) p / (1 - theta) = p.
-    near(drawProbability(fixture(), "L", [], "10", T), 0.1);
+    near(drawProbability($f, [], "10", T), 0.1);
     # After 10, 10: (2 * .1 + .09) / 1.1 = .29 / 1.1
-    near(drawProbability(fixture(), "L", ["10", "10"], "10", T), 0.29 / 1.1);
+    near(drawProbability($f, ["10", "10"], "10", T), 0.29 / 1.1);
     # After 10, 11, 10, 13: (2 * .1 + .09) / 1.3; an unseen 12: .27 / 1.3
-    near(drawProbability(fixture(), "L", ["10", "11", "10", "13"], "10", T), 0.29 / 1.3);
-    near(drawProbability(fixture(), "L", ["10", "11", "10", "13"], "12", T), 0.27 / 1.3);
+    near(drawProbability($f, ["10", "11", "10", "13"], "10", T), 0.29 / 1.3);
+    near(drawProbability($f, ["10", "11", "10", "13"], "12", T), 0.27 / 1.3);
 }
 
 func testParentChildWithThetaAtAHomozygousLocus() {
@@ -819,15 +822,12 @@ func testDuoPaternityIndexWithTheta() {
     def f as forensics.Profile init forensics.profile(
         "F",
         [gt("11", "11"), forensics.genotype("M", "10", "10")]);
-    near(
-        duoPaternityIndex($c, $f, twoLocus(), DEFAULT_MUTATION, T),
-        0.008 *
-            duoPaternityIndexAt(
-            twoLocus(),
-            forensics.genotype("M", "10", "10"),
-            forensics.genotype("M", "10", "10"),
-            DEFAULT_MUTATION,
-            T));
+    # Locus M: child and father 10/10, p10 = .1, DEFAULT_MUTATION.
+    #   F(10) = 1 - .002 = .998;  D(10 | 10,10) = (.2 + .09) / 1.1 = .29 / 1.1
+    #   X = F(10) D(10 | 10,10) = .998 * .29 / 1.1
+    #   Y = D(10 | 10,10) D(10 | 10,10,10) = (.29 / 1.1) * (.3 + .09) / 1.2
+    #   PI = .998 * 1.2 / .39 = 3.0707692...
+    near(duoPaternityIndex($c, $f, twoLocus(), DEFAULT_MUTATION, T), 0.008 * (0.998 * 1.2 / 0.39));
 }
 
 func thetaOfOneJoint() {
@@ -950,4 +950,270 @@ func testThetaVariantsNeverDropAnUncoveredLocus() {
     testing.assertThrows("paternityThetaOverAnUncoveredLocus", "kinship");
     testing.assertThrows("kinshipThetaOverAnUncoveredLocus", "kinship");
     testing.assertThrows("duoOverAnUncoveredLocus", "kinship");
+}
+
+# --- review fixes -------------------------------------------------------------
+
+func testMutationStepsUseTheExactLabelDifference() {
+    # 32.3 - 13.8 is exactly 18.5, which rounds half up to 19 steps:
+    #   .002 * .9 * .1^18 / 2 = 9e-22.
+    # The float difference is 18.499999999999996, which rounded to 18 steps
+    # (9e-21).
+    def p as float init mutationProbability(DEFAULT_MUTATION, "L", "13.8", "32.3");
+    testing.assertTrue(math.abs($p / 0.0000000000000000000009 - 1.0) < TOL);
+    # A difference past the int range: decay^(k-1) underflows to 0.
+    testing.assertEqual(
+        mutationProbability(DEFAULT_MUTATION, "L", "10", "99999999999999999999"),
+        0.0);
+}
+
+# farPanel builds `n` loci at which a 10/10 homozygote is typed while the
+# table lists only allele 11, so p10 is the floor 5/20000 = .00025.
+func farPanel(n as int) {
+    def out as forensics.FrequencyDb init forensics.db("t");
+    for (def i in 0..$n) {
+        $out = forensics.withLocus($out, "L{$i}", 10000, {"11": 0.5});
+    }
+    return $out;
+}
+
+func farProfile(id as string, n as int, a as string, b as string) {
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..$n) {
+        $gs[] = forensics.genotype("L{$i}", $a, $b);
+    }
+    return forensics.profile($id, $gs);
+}
+
+func kinshipLrPastTheFloatRange() {
+    kinshipLR(
+        farProfile("P", 44, "10", "10"),
+        farProfile("Q", 44, "10", "10"),
+        IDENTICAL,
+        farPanel(44));
+}
+
+func kinshipLrThetaPastTheFloatRange() {
+    kinshipLRTheta(
+        farProfile("P", 300, "10", "10"),
+        farProfile("Q", 300, "10", "10"),
+        IDENTICAL,
+        farPanel(300),
+        0.01);
+}
+
+func testKinshipLrPastTheFloatRangeHasALog10Form() {
+    # IDENTICAL against UNRELATED for a shared 10/10: 1 / p10^2 = 1.6e7 per
+    # locus, log10 = 7.20411998..., so 44 loci are 10^317 (before the fix: a
+    # runtime float-overflow error).
+    testing.assertThrows("kinshipLrPastTheFloatRange", "kinship");
+    def a as forensics.Profile init farProfile("P", 44, "10", "10");
+    def b as forensics.Profile init farProfile("Q", 44, "10", "10");
+    def perLocus as float init -2.0 * math.log10(0.00025);
+    near(log10KinshipLR($a, $b, IDENTICAL, farPanel(44)) / 44.0, $perLocus);
+    near(log10KinshipLRAgainst($a, $b, IDENTICAL, UNRELATED, farPanel(44)) / 44.0, $perLocus);
+    near(log10KinshipLRTheta($a, $b, IDENTICAL, farPanel(44), 0.0) / 44.0, $perLocus);
+    # With theta the per-locus LR is that of kinshipLRAtTheta; the sum is
+    # the sum of its logarithms.
+    def g as forensics.Genotype init forensics.genotype("L0", "10", "10");
+    def one as float init kinshipLRAtTheta(farPanel(1), $g, $g, IDENTICAL, UNRELATED, 0.01);
+    near(
+        log10KinshipLRAgainstTheta($a, $b, IDENTICAL, UNRELATED, farPanel(44), 0.01) / 44.0,
+        math.log10($one));
+    testing.assertThrows("kinshipLrThetaPastTheFloatRange", "kinship");
+}
+
+func log10KinshipOfAnExclusion() {
+    # Parent and child sharing no allele: the parent/child LR is 0.
+    def a as forensics.Profile init forensics.profile("A", [gt("10", "10")]);
+    def b as forensics.Profile init forensics.profile("B", [gt("11", "11")]);
+    log10KinshipLR($a, $b, PARENT_CHILD, fixture());
+}
+
+func testLog10KinshipLrRefusesAnExclusion() {
+    testing.assertThrows("log10KinshipOfAnExclusion", "kinship");
+}
+
+func paternityPastTheFloatRange() {
+    # Mother 11/11, child 10/11, alleged father 10/10: PI = 1 / p10 = 4000
+    # per locus, 4000^100 = 10^360.
+    paternityIndexWith(
+        farProfile("M", 100, "11", "11"),
+        farProfile("C", 100, "10", "11"),
+        farProfile("F", 100, "10", "10"),
+        farPanel(100),
+        NO_MUTATION);
+}
+
+func paternityThetaPastTheFloatRange() {
+    # Theta .01: Y = D(10 | 11,11,10,10) = (.02 + .99 * .00025) / 1.03 =
+    # .019658, PI = 50.87 per locus, 10^341 over 200 loci.
+    paternityIndexWithTheta(
+        farProfile("M", 200, "11", "11"),
+        farProfile("C", 200, "10", "11"),
+        farProfile("F", 200, "10", "10"),
+        farPanel(200),
+        NO_MUTATION,
+        0.01);
+}
+
+func duoPastTheFloatRange() {
+    # Child and alleged father 10/10: PI = 1 / p10 = 4000 per locus.
+    duoPaternityIndex(
+        farProfile("C", 100, "10", "10"),
+        farProfile("F", 100, "10", "10"),
+        farPanel(100),
+        NO_MUTATION,
+        0.0);
+}
+
+func testPaternityIndicesPastTheFloatRangeThrowTheirOwnKind() {
+    testing.assertThrows("paternityPastTheFloatRange", "kinship");
+    testing.assertThrows("paternityThetaPastTheFloatRange", "kinship");
+    testing.assertThrows("duoPastTheFloatRange", "kinship");
+}
+
+# --- round 2 review fixes ---------------------------------------------------
+
+# messageOf runs a named function and returns its error message, "" if none.
+func messageOf(name as string) {
+    def caught as string init "";
+    try {
+        if ($name == "rateLiteralPastOne") {
+            rateLiteralPastOne();
+        } elseif ($name == "negativeLocusRateLiteral") {
+            negativeLocusRateLiteral();
+        } elseif ($name == "mixedLabelSteps") {
+            mixedLabelSteps();
+        } else {
+            nonNumericSteps();
+        }
+    } catch (e) {
+        $caught = $e.message;
+    }
+    return $caught;
+}
+
+func rateLiteralPastOne() {
+    # Mother 10/11, child 10/12, father 12/13 is consistent. With rate 1.5:
+    #   X = .5 (1 - 1.5) = -.25 per mother allele, Y = .5 * .3 -> PI -2.5.
+    paternityIndexAt(
+        fixture(),
+        gt("10", "11"),
+        gt("10", "12"),
+        gt("12", "13"),
+        MutationModel{rate: 1.5, decay: 0.1, perLocus: {}});
+}
+
+func negativeLocusRateLiteral() {
+    # perLocus -.5 at L: the father's transmission of 12 is .5 * 1.5 = .75,
+    # which made PI 7.5, past its maximum 1 / p12 = 3.33.
+    paternityIndexAt(
+        fixture(),
+        gt("10", "11"),
+        gt("10", "12"),
+        gt("12", "13"),
+        MutationModel{rate: 0.002, decay: 0.1, perLocus: {"L": -0.5}});
+}
+
+func decayLiteralOfOne() {
+    mutationProbability(MutationModel{rate: 0.002, decay: 1.0, perLocus: {}}, "L", "10", "12");
+}
+
+func testMutationModelLiteralsAreValidated() {
+    testing.assertThrows("rateLiteralPastOne", "kinship");
+    testing.assertThrows("negativeLocusRateLiteral", "kinship");
+    testing.assertThrows("decayLiteralOfOne", "kinship");
+    testing.assertContains(messageOf("rateLiteralPastOne"), "mutation rate 1.5 must be in [0, 1)");
+    testing.assertContains(messageOf("negativeLocusRateLiteral"), "locus 'L'");
+    # A valid literal is unaffected: 1 - .002 for no change.
+    near(
+        mutationProbability(MutationModel{rate: 0.002, decay: 0.1, perLocus: {}}, "L", "12", "12"),
+        0.998);
+}
+
+func negativeK0Literal() {
+    # (-1, 2, 0) gave kinshipLRAt -1.0 for 10/11 vs 12/13 (T1 = 0).
+    kinshipLRAt(
+        fixture(),
+        gt("10", "11"),
+        gt("12", "13"),
+        Relationship{name: "bad", k0: -1.0, k1: 2.0, k2: 0.0},
+        UNRELATED);
+}
+
+func unnormalisedAltLiteral() {
+    kinshipLRAtTheta(
+        fixture(),
+        gt("10", "11"),
+        gt("12", "13"),
+        FULL_SIBLINGS,
+        Relationship{name: "bad", k0: 0.5, k1: 0.0, k2: 0.0},
+        0.01);
+}
+
+func negativeJointLiteral() {
+    jointGenotypeProbability(
+        fixture(),
+        gt("10", "11"),
+        gt("12", "13"),
+        Relationship{name: "bad", k0: 1.5, k1: -0.5, k2: 0.0});
+}
+
+func testRelationshipLiteralsAreValidated() {
+    testing.assertThrows("negativeK0Literal", "kinship");
+    testing.assertThrows("unnormalisedAltLiteral", "kinship");
+    testing.assertThrows("negativeJointLiteral", "kinship");
+    # A valid literal still works: full siblings 10/11 vs 12/13 share nothing,
+    #   LR = k0 = .25.
+    near(
+        kinshipLRAt(
+            fixture(),
+            gt("10", "11"),
+            gt("12", "13"),
+            Relationship{name: "fs", k0: 0.25, k1: 0.5, k2: 0.25},
+            UNRELATED),
+        0.25);
+}
+
+func mixedLabelSteps() {
+    mutationProbability(DEFAULT_MUTATION, "L", "10", "X");
+}
+
+func nonNumericSteps() {
+    mutationProbability(DEFAULT_MUTATION, "L", "X", "Y");
+}
+
+func testTheStepErrorNamesTheNonNumericLabel() {
+    testing.assertContains(messageOf("mixedLabelSteps"), "'X' is not a repeat count");
+    testing.assertContains(messageOf("nonNumericSteps"), "neither is a repeat count");
+}
+
+func testFrequenciesAreReadOnceFromTheRightLocus() {
+    # freqsOf floors and caps as forensics.alleleFrequency does. N = 3 puts
+    # the floor at 5/6, so 10 (.05) and the unlisted 14 score 5/6 and 11 (.9)
+    # keeps .9.
+    def db as forensics.FrequencyDb init forensics.withLocus(
+        forensics.db("t"),
+        "L",
+        3,
+        {"10": 0.05, "11": 0.9});
+    def f as Freqs init freqsOf($db, "L", ["10", "11", "14", "10"]);
+    testing.assertEqual($f.p["10"], forensics.alleleFrequency($db, "L", "10"));
+    testing.assertEqual($f.p["11"], 0.9);
+    testing.assertEqual($f.p["14"], forensics.alleleFrequency($db, "L", "14"));
+    near($f.p["14"], 5.0 / 6.0);
+}
+
+func uncoveredFreqs() {
+    freqsOf(fixture(), "M", ["10"]);
+}
+
+func unflooredUnlisted() {
+    freqsOf(forensics.withLocus(forensics.db("t"), "L", 0, {"10": 0.5}), "L", ["11"]);
+}
+
+func testFreqsOfThrowsTheCoreErrors() {
+    testing.assertThrows("uncoveredFreqs", "forensicgenetics");
+    testing.assertThrows("unflooredUnlisted", "forensicgenetics");
 }
