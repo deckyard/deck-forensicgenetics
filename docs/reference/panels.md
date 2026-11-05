@@ -35,8 +35,8 @@ Full citations: the module docblock and
   FGA, TH01, TPOX, vWA, Penta D, Penta E, SE33. Not the kit's dye order.
 - `panel` and `hasPanel` ignore case, spaces, hyphens and underscores in the
   name.
-- `normalizeLocus` folds case and drops spaces, `_`, `-`, `.`, `/` and a
-  `HUM` prefix, then maps known aliases: `THO1` -> `TH01`, `VWA` / `VWFA31A`
+- `normalizeLocus` folds case, drops spaces, `_`, `-`, `.` and `/`, and drops
+  a `HUM` prefix when the rest is a known alias. Aliases: `THO1` -> `TH01`, `VWA` / `VWFA31A`
   -> `vWA`, `FIBRA` -> `FGA`, `CSF1P0` -> `CSF1PO`, `PENTAD` / `PENTAE` ->
   `Penta D` / `Penta E`, `ACTBP2` -> `SE33`, `Amelogenin` -> `AMEL`.
   D-segment names (`d8s1179`, `dys391`) are upper-cased; anything else is
@@ -54,4 +54,5 @@ Full citations: the module docblock and
 - a custom panel with no name, no loci, or a locus listed twice (after
   normalisation)
 - two panels with no shared locus (`intersect`)
-- two loci of one profile or table that normalise to the same name
+- two loci of one profile or table that normalise to the same name (also in
+  `missingInProfile` / `missingInDb`)

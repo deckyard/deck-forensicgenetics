@@ -1,10 +1,9 @@
 # Mixtures
 
 A mixed stain has no genotype, only the alleles present at each locus. The
-core answers the question that needs no assumption about contributors: what
-fraction of the population cannot be excluded? `mixture.j` answers the
-question that does: how much more probable is the stain if the suspect
-contributed? See
+core computes the share of the population not excluded (CPI / CPE), which
+assumes nothing about the contributors. `mixture.j` computes a likelihood
+ratio for two hypotheses that name contributors; see
 [Likelihood ratio with drop-out and drop-in](#likelihood-ratio-with-drop-out-and-drop-in).
 
 ```jennifer
@@ -28,8 +27,8 @@ PI = (Σ observed allele frequencies)²     sum capped at 1 before squaring
 PE = 1 - PI
 ```
 
-The frequencies are floored at `5/(2N)`, which is why the cap can matter at a
-locus showing many alleles.
+The frequencies are floored at `5/(2N)`, so at a locus showing many alleles
+the sum can pass 1; the cap applies there.
 
 ```jennifer
 forensicgenetics.inclusionProbability($db, "D3S1358", ["15", "16", "17"]);
@@ -149,7 +148,9 @@ At one locus, with `E` the observed alleles:
 - **Cost.** Each unknown multiplies the work by the number of genotypes at the
   locus. At most `mixture.MAX_UNKNOWNS` (3) unknowns and
   `mixture.MAX_LOCUS_ALLELES` (10) alleles per locus; a locus over either
-  throws. Leave a locus out with `mixture.restrictMixture(stain, keep)`.
+  throws. A whole-mixture call over `mixture.MAX_COMBINATIONS` (250000)
+  genotype combinations throws before it starts. Leave a locus out, or score
+  groups of loci, with `mixture.restrictMixture(stain, keep)`.
 
 ### Worked example
 

@@ -38,6 +38,8 @@ Guide: [Database searching](../casework/database-search.md).
   literal that bypassed `searchOptions`
 - an empty query profile
 - `allelesShared` on genotypes at different loci
+- a `familialSearch` candidate whose LR passes the float maximum (score the
+  pair with `kinship.log10KinshipLR`)
 
 `familialSearch` also raises `kinship`'s `"kinship"` error when the query and
 a candidate share a locus the table does not cover.

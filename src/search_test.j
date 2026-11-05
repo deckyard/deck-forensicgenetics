@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for search.j. Run with `jennifer test search_test.j`.
 #
@@ -306,8 +306,63 @@ func familialEmptyQuery() {
     familialSearch(forensics.profile("E", []), kinDatabase(), kinship.FULL_SIBLINGS, fixture(), 1);
 }
 
+func familialOverflow() {
+    # n = 0 table, alleles 10 and 11 at 1e-5 at 40 loci. IDENTICAL against
+    # itself: 1 / (2 · 1e-5 · 1e-5) = 5e9 per locus, 5e9^40 ≈ 9e388, past
+    # 1.8e308. Before the guard this was a runtime overflow.
+    def fdb as forensics.FrequencyDb init forensics.db("rare");
+    def gs as list of forensics.Genotype init [];
+    for (def i in 0..40) {
+        $fdb = forensics.withLocus($fdb, "L{$i}", 0, {"10": 0.00001, "11": 0.00001, "12": 0.99998});
+        $gs[] = gl("L{$i}", "10", "11");
+    }
+    def q as forensics.Profile init forensics.profile("Q", $gs);
+    familialSearch($q, [$q], kinship.IDENTICAL, $fdb, 1);
+}
+
 func testFamilialSearchErrors() {
     testing.assertThrows("familialUncovered", "kinship");
+    testing.assertThrows("familialOverflow", "search");
     testing.assertThrows("familialZeroMin", "search");
     testing.assertThrows("familialEmptyQuery", "search");
+}
+
+# --- ranking without callbacks ----------------------------------------------
+
+func testSearchRankingPastNinePositions() {
+    # Twelve candidates, "exact" at even and "mis" at odd positions. Ranked:
+    # every exact (positions 0, 2, ..., 10) in database order, then every mis.
+    # Position 10 must sort after 2, so the ranking key is not a bare string
+    # of digits.
+    def base as list of forensics.Profile init database();
+    def db as list of forensics.Profile init [];
+    for (def i in 0..12) {
+        $db[] = $base[1 - ($i % 2)];
+    }
+    def rs as list of Comparison init search(query(), $db, searchOptions(2, 1, true));
+    def got as list of int init [];
+    for (def r in $rs) {
+        $got[] = $r.index;
+    }
+    testing.assertEqual($got, [0, 2, 4, 6, 8, 10, 1, 3, 5, 7, 9, 11]);
+}
+
+func testFamilialTiesKeepDatabaseOrderAndUnscoredGoLast() {
+    # d (typed at L only) is below minLoci 2; b (identical, LR 253.34375 as
+    # above) beats c (nothing shared, LR < 1). Equal LRs keep database order.
+    def k as list of forensics.Profile init kinDatabase();
+    def db as list of forensics.Profile init [$k[3], $k[2], $k[1], $k[2], $k[1], $k[3]];
+    def hs as list of FamilialHit init familialSearch(
+        kinQuery(),
+        $db,
+        kinship.FULL_SIBLINGS,
+        fixture(),
+        2);
+    def got as list of int init [];
+    for (def h in $hs) {
+        $got[] = $h.index;
+    }
+    testing.assertEqual($got, [2, 4, 1, 3, 0, 5]);
+    testing.assertFalse($hs[4].scored);
+    testing.assertFalse($hs[5].scored);
 }

@@ -26,7 +26,7 @@ narrow to a panel:
 ```jennifer
 def overlap as panels.Panel init panels.intersect(
     panels.panel("Identifiler Plus"), panels.panel("ESS"));
-# the seven loci the old European set and Identifiler share
+# seven loci: the original (pre-2009) ESS
 def stain as forensicgenetics.Profile init panels.restrictProfile($raw, $overlap);
 def gaps as list of string init panels.missingInDb($db, $overlap);
 ```

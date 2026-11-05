@@ -26,11 +26,11 @@ confidence. At `k = 0` it is `1 - α^(1/N)` (the "rule of three" at 95%); at
 `examples/lineage.j`:
 
 ```
-k       N       k/N          95% upper bound   LR
-0       5000    0.00000000   0.00059897        1669.5
-1       5000    0.00020000   0.00094842        1054.4
-2       5000    0.00040000   0.00125862        794.5
-5       5000    0.00100000   0.00210145        475.9
+  k      N          k/N   95% upper bound       LR
+  0   5000   0.00000000        0.00059897   1669.5
+  1   5000   0.00020000        0.00094842   1054.4
+  2   5000   0.00040000        0.00125862    794.5
+  5   5000   0.00100000        0.00210145    475.9
 ```
 
 A haplotype never seen in 5000 profiles is worth an LR of about 1670.
@@ -59,7 +59,12 @@ def h as lineage.MtHaplotype init lineage.mtHaplotype("evidence",
 
 Parsing is case-insensitive. Positions are 1-based rCRS coordinates in
 `[1, 999999]`; the bound keeps the fixed-width sort key correct and is far
-above the 16569-base genome. Insertion indices run from 1 to 9999.
+above the 16569-base genome. Insertion indices run from 1 to 9999. `0.1G`
+(position 0) is an insertion before position 1, the form `align` emits for
+one before the first base of a region starting at 1. `D` after a position is
+always a deletion; the IUPAC code D (A/G/T) cannot be written. `mtHaplotype`
+throws when two designations name one position and insertion index
+(`263G 263G`, `263G 263A`).
 
 ```jennifer
 lineage.parseDifference("315.1C");    # Difference{position: 315, insertion: 1, ...}
@@ -92,18 +97,21 @@ def h as lineage.MtHaplotype init lineage.mtHaplotypeFrom("evidence",
 ```
 
 `align` is a global Needleman-Wunsch alignment (match +1, mismatch -1,
-gap -2) with indels slid to the 3' end of any homopolymer run, so an extra C in
-the 311-315 stretch reads as `315.1C`, not `311.1C`. Pass the rCRS
+gap -2) with each indel run slid as a block to the 3' end of any homopolymer
+or tandem-repeat run, so an extra C in the 311-315 stretch reads as `315.1C`,
+not `311.1C`, and an extra AC in `GACACT` as `5.1A 5.2C`. Pass the rCRS
 (NC_012920.1) region you sequenced, with its first position as `refStart`; no
 reference is bundled. `mtHaplotypeFrom` records the range
-`refStart`-`(refStart + length - 1)`.
+`refStart`-`(refStart + length - 1)`; both throw when that end passes
+999999, the largest position a designation may name.
 
 - EMPOP's phylogenetic alignment rules are not applied. A complex indel may
   be placed differently from EMPOP; check it before quoting.
-- Only a band around the diagonal is computed, widened until the result is the
-  true optimum. Near-identical sequences cost roughly linear time; divergent
-  ones approach the full O(nm). Regions over `MAX_ALIGN_LENGTH` (5000 bases)
-  throw. Timings are in
+- Only a band around the diagonal is computed, widened until its score beats
+  every path that leaves it, so the result is the full-matrix optimum.
+  Near-identical sequences cost roughly linear time; divergent ones approach
+  the full O(nm). Regions over `MAX_ALIGN_LENGTH` (5000 bases), and band passes
+  over `MAX_ALIGN_CELLS` (1,250,000 cells), throw. Timings are in
   [Limitations](../project/limitations.md#alignment-cost-grows-with-the-region-and-with-divergence).
 
 ## Y-STR haplotypes
@@ -127,8 +135,12 @@ lineage.ySharedLoci($a, $b);         # the loci compared
 
 Only shared loci are compared, so different panels compare over their overlap;
 no shared locus throws. Multi-copy loci are sorted first, so `"11,14"` equals
-`"14,11"`. Different copy counts at a shared locus throw, and so does a
-non-numeric allele, at construction and on comparison.
+`"14,11"`. An allele that is not a repeat count (1-6 digits, optionally `.`
+and 1-6 more) throws, at construction and on comparison.
+Step distances are exact (decimal): `17.2` to `18.2` is one step, while `17.2`
+and `18` differ in their fractional part and no number of whole-repeat steps
+joins them. `yStepDistance` throws there and on different copy counts at a
+shared locus; `yMatchesWithin` returns false, as `yMatches` does.
 
 `yMatchesWithin(a, b, 1.0)` keeps a paternal line together across one
 single-step mutation, which `yMatches` would split:

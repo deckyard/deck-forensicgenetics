@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for panels.j. Run with `jennifer test panels_test.j`.
 #
@@ -224,6 +224,26 @@ func testSegmentNameShape() {
     testing.assertFalse(isSegmentName("DS11"));
     testing.assertFalse(isSegmentName("D21S"));
     testing.assertFalse(isSegmentName("D2AS11"));
+    testing.assertTrue(isSegmentName("DYS391"));
+    testing.assertFalse(isSegmentName("D1S2S3"));
+    # not folded: the fast path in normalizeLocus must not take it
+    testing.assertFalse(isSegmentName("d8s1179"));
+    testing.assertFalse(isSegmentName("D8S1179 "));
+}
+
+func testCanonicalNamesAreFixedPointsOfTheFoldedPath() {
+    # normalizeLocus returns a CANONICAL or upper-case D-segment name without
+    # folding. Lower-casing forces the folded path, which must give the same
+    # name back: for every CANONICAL entry and every built-in panel locus.
+    for (def name in CANONICAL) {
+        testing.assertEqual(normalizeLocus(strings.lower($name)), $name);
+    }
+    for (def pn in panelNames()) {
+        for (def locus in panel($pn).loci) {
+            testing.assertEqual(normalizeLocus(strings.lower($locus)), $locus);
+            testing.assertEqual(normalizeLocus($locus), $locus);
+        }
+    }
 }
 
 func blankLocus() {
@@ -332,4 +352,29 @@ func testRestrictDbAndMissingInDb() {
     testing.assertEqual(forensics.loci($r), ["D8S1179", "TH01"]);
     testing.assertEqual(len(missingInDb(messyDb(), panel("ESS"))), 10);
     testing.assertEqual(missingInDb(messyDb(), customPanel("x", ["TH01", "D8S1179"])), []);
+}
+
+# --- regressions from the casework review -----------------------------------
+
+func missingWithProfileCollision() {
+    # TH01 and THO1 are one locus; missingInProfile used to keep the last and
+    # report the panel covered.
+    def p as forensics.Profile init forensics.profile(
+        "P",
+        [forensics.genotype("TH01", "6", "7"), forensics.genotype("THO1", "8", "9")]);
+    missingInProfile($p, customPanel("x", ["TH01"]));
+}
+
+func missingWithDbCollision() {
+    def fdb as forensics.FrequencyDb init forensics.withLocus(
+        forensics.withLocus(forensics.db("t"), "TH01", 100, {"6": 0.5, "7": 0.5}),
+        "THO1",
+        100,
+        {"8": 0.5, "9": 0.5});
+    missingInDb($fdb, customPanel("x", ["TH01"]));
+}
+
+func testMissingInThrowsOnACollisionLikeRestrict() {
+    testing.assertThrows("missingWithProfileCollision", "panels");
+    testing.assertThrows("missingWithDbCollision", "panels");
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 # White-box test overlay for lineage.j. Run with `jennifer test lineage_test.j`.
 #
@@ -10,6 +10,7 @@ use testing;
 use math;
 use strings;
 use convert;
+use time;
 
 def const TOL as float init 0.000000001;
 
@@ -187,6 +188,54 @@ func testMtMatchesAndDistance() {
     testing.assertEqual(mtDistance($a, $d), 2);
 }
 
+func testMtDistanceOnLiteralsKeepsSetSemantics() {
+    def a as MtHaplotype init mtHaplotype("A", [], "16189C 16223T 263G");
+    # out of order and repeated: the merge does not apply; as sets, equal
+    def lit as MtHaplotype init MtHaplotype{
+        id: "L",
+        ranges: [],
+        differences: [
+            parseDifference("16223T"),
+            parseDifference("263G"),
+            parseDifference("16189C"),
+            parseDifference("263G")
+        ]
+    };
+    testing.assertEqual(mtDistance($a, $lit), 0);
+    testing.assertEqual(mtDistance($lit, $a), 0);
+    # a deletion literal carrying a base still renders "249d"
+    def del as MtHaplotype init MtHaplotype{
+        id: "D",
+        ranges: [],
+        differences: [Difference{position: 249, insertion: 0, base: "X", kind: "del"}]
+    };
+    testing.assertEqual(mtDistance($del, mtHaplotype("E", [], "249d")), 0);
+    # 249d against 249A: one designation each side
+    testing.assertEqual(mtDistance($del, mtHaplotype("F", [], "249A")), 2);
+}
+
+func testMtDistanceMergeEqualsTheSetDifference() {
+    # random designation sets over a few positions, with substitutions,
+    # insertions and deletions, against the designation-set count
+    def kinds as list of string init ["C", "T", "d", ".1C", ".2A", "A"];
+    math.randSeed(7);
+    for (def round in 0..200) {
+        def ta as list of string init [];
+        def tb as list of string init [];
+        for (def pos in [73, 150, 263, 315, 16189, 16223]) {
+            if (math.randInt(0, 2) > 0) {
+                $ta[] = "{$pos}" + $kinds[math.randInt(0, 5)];
+            }
+            if (math.randInt(0, 2) > 0) {
+                $tb[] = "{$pos}" + $kinds[math.randInt(0, 5)];
+            }
+        }
+        def a as MtHaplotype init mtHaplotype("A", [], strings.join($ta, " "));
+        def b as MtHaplotype init mtHaplotype("B", [], strings.join($tb, " "));
+        testing.assertEqual(mergeDistance($a, $b), setDistance($a, $b));
+    }
+}
+
 func testMtRangesAgree() {
     def a as MtHaplotype init mtHaplotype("A", ["16024-16365", "73-340"], "263G");
     def b as MtHaplotype init mtHaplotype("B", ["73-340", "16024-16365"], "263G");
@@ -253,10 +302,32 @@ func alignZeroStart() {
     align("ACGT", "ACGT", 0);
 }
 
+func alignPastMaxPosition() {
+    # the last base would be 999999 + 3 = 1000002; before the check this
+    # emitted 1000000G, which parseDifference rejects
+    align("ACGT", "AGGT", 999999);
+}
+
+func fromAtMaxInt() {
+    # before the check: a runtime integer overflow computing the range end
+    mtHaplotypeFrom("S", "ACGT", "ACGT", 9223372036854775807);
+}
+
 func testAlignValidatesItsInput() {
     testing.assertThrows("alignEmptySample", "lineage");
     testing.assertThrows("alignBadCharacter", "lineage");
     testing.assertThrows("alignZeroStart", "lineage");
+    testing.assertThrows("alignPastMaxPosition", "lineage");
+    testing.assertThrows("fromAtMaxInt", "lineage");
+}
+
+func testAlignAtTheLastPositionRoundTrips() {
+    # refStart 999996: the four bases sit at 999996..999999, the C→G at 999997
+    def ds as list of Difference init align("ACGT", "AGGT", 999996);
+    testing.assertEqual(designations($ds), ["999997G"]);
+    testing.assertEqual(parseDifference("999997G"), $ds[0]);
+    def h as MtHaplotype init mtHaplotypeFrom("S", "ACGT", "AGGT", 999996);
+    testing.assertEqual($h.ranges, ["999996-999999"]);
 }
 
 # --- Y-STR haplotypes -------------------------------------------------------
@@ -349,10 +420,41 @@ func buildWithANonNumericAllele() {
     yHaplotype("bad", {"DYS19": "OL"});
 }
 
+func buildWithAHugeAllele() {
+    # 400 digits: before the cap, a runtime toFloat failure
+    yHaplotype("bad", {"DYS19": strings.repeat("9", 400)});
+}
+
+func stepDistanceOnASevenDigitAllele() {
+    yStepDistance(yA(), yHaplotype("b", {"DYS19": "1234567"}));
+}
+
+func matchOnALongFraction() {
+    yMatches(yA(), YHaplotype{id: "b", loci: {"DYS19": "14.1234567"}});
+}
+
 func testYAlleleValidationRaisesLineageErrors() {
     # Not a bare toFloat failure from `convert` - the caller catches "lineage".
     testing.assertThrows("stepDistanceOnANonNumericAllele", "lineage");
     testing.assertThrows("buildWithANonNumericAllele", "lineage");
+    testing.assertThrows("buildWithAHugeAllele", "lineage");
+    testing.assertThrows("stepDistanceOnASevenDigitAllele", "lineage");
+    testing.assertThrows("matchOnALongFraction", "lineage");
+    # six digits on each side still parse
+    testing.assertEqual(len(yLoci(yHaplotype("ok", {"DYS19": "123456.123456"}))), 1);
+}
+
+func testYSingleCopyStepsAreExact() {
+    # 18.2 - 17.2 = 1 exactly (the float difference is 0.99999...);
+    # " 15 " against "14": trimmed, 1; "11" against "11.0": 0 steps.
+    def a as YHaplotype init yHaplotype("A", {"X": "17.2", "Y": " 15 ", "Z": "11"});
+    def b as YHaplotype init yHaplotype("B", {"X": "18.2", "Y": "14", "Z": "11.0"});
+    testing.assertEqual(yStepDistance($a, $b), 2.0);
+    testing.assertTrue(yMatchesWithin($a, $b, 2.0));
+    testing.assertFalse(yMatches($a, $b));
+    testing.assertTrue(yMatches(yHaplotype("C", {"Z": "11"}), yHaplotype("D", {"Z": "11.0"})));
+    # 17.2 against 18 differs by a fraction: no step count
+    testing.assertFalse(yMatchesWithin($a, yHaplotype("E", {"X": "18"}), 5.0));
 }
 
 func alignBeyondTheLengthCap() {
@@ -533,4 +635,271 @@ func testYHaplotypeValidatesItsInput() {
 func testYMultiCopyAcceptsASlash() {
     def b as YHaplotype init yHaplotype("B", {"DYS385": "14/11"});
     testing.assertTrue(yMatches(yA(), $b));
+}
+
+# --- regressions from the casework review -----------------------------------
+
+# parkMiller is a Park-Miller generator private to these tests, so the
+# sequences below do not depend on math.rand's algorithm.
+func parkMiller(state as int) {
+    return ($state * 16807) % 2147483647;
+}
+
+# seededSeq returns n bases drawn from `seed`, and the next state, as
+# [sequence, state].
+func seededSeq(n as int, seed as int) {
+    def bases as list of string init ["A", "C", "G", "T"];
+    def out as list of string init [];
+    def state as int init $seed;
+    for (def i in 0..$n) {
+        $state = parkMiller($state);
+        $out[] = $bases[$state % 4];
+    }
+    return [strings.join($out, ""), convert.toString($state)];
+}
+
+# fullMatrix is a plain O(nm) Needleman-Wunsch over the whole matrix, written
+# independently of alignBand: full score matrix, no band, no byte tricks. Same
+# scores and tie order (diagonal, then up, then left). Returns [top, bottom,
+# score].
+func fullMatrix(ref as string, smp as string) {
+    def r as list of string init strings.chars($ref);
+    def s as list of string init strings.chars($smp);
+    def m as int init len($r);
+    def n as int init len($s);
+    def score as list of list of int init [];
+    def move as list of list of int init [];
+    for (def i in 0..($m + 1)) {
+        def srow as list of int init [$i * GAP];
+        def mrow as list of int init [DIR_UP];
+        for (def j in 1..($n + 1)) {
+            if ($i == 0) {
+                $srow[] = $j * GAP;
+                $mrow[] = DIR_LEFT;
+                continue;
+            }
+            def d as int init $score[$i - 1][$j - 1] + MISMATCH;
+            if ($r[$i - 1] == $s[$j - 1]) {
+                $d = $score[$i - 1][$j - 1] + MATCH;
+            }
+            def u as int init $score[$i - 1][$j] + GAP;
+            def l as int init $srow[$j - 1] + GAP;
+            def best as int init $d;
+            def mv as int init DIR_DIAG;
+            if ($u > $best) {
+                $best = $u;
+                $mv = DIR_UP;
+            }
+            if ($l > $best) {
+                $best = $l;
+                $mv = DIR_LEFT;
+            }
+            $srow[] = $best;
+            $mrow[] = $mv;
+        }
+        $score[] = $srow;
+        $move[] = $mrow;
+    }
+    def top as list of string init [];
+    def bottom as list of string init [];
+    def i as int init $m;
+    def j as int init $n;
+    while ($i > 0 or $j > 0) {
+        def mv as int init $move[$i][$j];
+        if ($mv == DIR_DIAG) {
+            $top[] = $r[$i - 1];
+            $bottom[] = $s[$j - 1];
+            $i = $i - 1;
+            $j = $j - 1;
+        } elseif ($mv == DIR_UP) {
+            $top[] = $r[$i - 1];
+            $bottom[] = "-";
+            $i = $i - 1;
+        } else {
+            $top[] = "-";
+            $bottom[] = $s[$j - 1];
+            $j = $j - 1;
+        }
+    }
+    return [
+        strings.join(lists.reverse($top), ""),
+        strings.join(lists.reverse($bottom), ""),
+        convert.toString($score[$m][$n])
+    ];
+}
+
+func testBandedAlignmentIsExactOnAShiftedWindow() {
+    # Reference = 40 bases + core, sample = core + 40 bases: the same 200-base
+    # core read through a window shifted by 40. The path the band sees first
+    # (all diagonal, about a quarter matches) never touches the band edge, but
+    # the optimum leaves it: 40 deletions, 200 matches, 40 insertions score
+    # 200 - 80 * 2 = 40, against about 60 - 180 = -120 on the diagonal.
+    def state as int init 7;
+    for (def trial in 0..3) {
+        def core as list of string init seededSeq(200, $state);
+        def head as list of string init seededSeq(40, convert.toInt($core[1]));
+        def tail as list of string init seededSeq(40, convert.toInt($head[1]));
+        $state = convert.toInt($tail[1]);
+        def ref as string init $head[0] + $core[0];
+        def smp as string init $core[0] + $tail[0];
+        def full as list of string init fullMatrix($ref, $smp);
+        def banded as list of string init alignPair($ref, $smp);
+        testing.assertTrue(convert.toInt($full[2]) >= 40);
+        testing.assertEqual($banded[0], $full[0]);
+        testing.assertEqual($banded[1], $full[1]);
+    }
+}
+
+func testBandedAlignmentMatchesTheFullMatrix() {
+    # The same differential as testBandedAlignmentMatchesFullWidth, against
+    # the independent full-matrix aligner instead of alignBand at full width.
+    math.randSeed(4242);
+    for (def trial in 0..20) {
+        def ref as string init randomSeq(math.randInt(20, 80));
+        def smp as string init mutate(
+            $ref,
+            math.randInt(0, 8),
+            math.randInt(0, 6),
+            math.randInt(0, 6));
+        def full as list of string init fullMatrix($ref, $smp);
+        def banded as list of string init alignPair($ref, $smp);
+        testing.assertEqual($banded[0], $full[0]);
+        testing.assertEqual($banded[1], $full[1]);
+    }
+}
+
+func testBandBoundIsTheBestScoreOutsideTheBand() {
+    # m = n = 10, w = 2: leaving the band visits diagonal +-3 and returns to
+    # 0, so at least 6 gaps, leaving (20 - 6) / 2 = 7 diagonal moves:
+    # 7 * 1 + 6 * -2 = -5.
+    testing.assertEqual(bandBound(10, 10, 2), -5);
+    # m = 12, n = 10, w = 3: g = 2 * 4 - 2 = 6, (22 - 6) / 2 = 8: 8 - 12 = -4.
+    testing.assertEqual(bandBound(12, 10, 3), -4);
+}
+
+func alignTooDivergent() {
+    # Unrelated 1400-base sequences need the full 1400 x 1401 matrix, over
+    # MAX_ALIGN_CELLS (1250000); it is refused before that pass runs.
+    def a as list of string init seededSeq(1400, 11);
+    def b as list of string init seededSeq(1400, convert.toInt($a[1]));
+    align($a[0], $b[0], 1);
+}
+
+func testAlignRefusesABandPastTheCellCap() {
+    testing.assertThrows("alignTooDivergent", "lineage");
+}
+
+func testGapShiftIsLinear() {
+    # 5000 A against one A: one A kept at position 1 and 4999 deletions slid
+    # 3' to 2..5000. The swap-until-stable shift took 22 s here.
+    def t0 as int init time.unixMillis(time.now());
+    def ds as list of Difference init align(strings.repeat("A", 5000), "A", 1);
+    def ms as int init time.unixMillis(time.now()) - $t0;
+    testing.assertEqual(len($ds), 4999);
+    testing.assertEqual(formatDifference($ds[0]), "2d");
+    testing.assertEqual(formatDifference($ds[4998]), "5000d");
+    testing.assertTrue($ms < 1000);
+}
+
+func testRepeatIndelsMoveThreePrimeAsABlock() {
+    # GACACT -> GACACACT: one more AC unit. Every placement of the inserted
+    # pair scores the same; the 3'-most is after the last C (position 5).
+    testing.assertEqual(designations(align("GACACT", "GACACACT", 1)), ["5.1A", "5.2C"]);
+    # A CAG unit gained: G T T C A G C A T, inserted after position 8.
+    testing.assertEqual(
+        designations(align("GTTCAGCAT", "GTTCAGCAGCAT", 1)),
+        ["8.1G", "8.2C", "8.3A"]);
+    # An AC unit lost from GACACACT: the 3'-most AC is positions 6-7.
+    testing.assertEqual(designations(align("GACACACT", "GACACT", 1)), ["6d", "7d"]);
+}
+
+func testLeadingInsertionRoundTrips() {
+    # A G before the first reference base is numbered after position 0.
+    def ds as list of Difference init align("ACGTACGT", "GACGTACGT", 1);
+    testing.assertEqual(designations($ds), ["0.1G"]);
+    testing.assertEqual(parseDifference("0.1G"), $ds[0]);
+    testing.assertEqual(
+        parseDifference("0.2a"),
+        Difference{position: 0, insertion: 2, base: "A", kind: "ins"});
+    def h as MtHaplotype init mtHaplotype("H", [], "73G 0.1G");
+    testing.assertEqual(mtDesignations($h), ["0.1G", "73G"]);
+}
+
+func deletionAtZero() {
+    parseDifference("0d");
+}
+
+func testPositionZeroIsOnlyAnInsertion() {
+    testing.assertThrows("positionZero", "lineage");
+    testing.assertThrows("deletionAtZero", "lineage");
+}
+
+func testDIsADeletionNotAnIupacCode() {
+    testing.assertEqual(parseDifference("16189D").kind, "del");
+    testing.assertEqual(parseDifference("16189B").base, "B");
+}
+
+func testRangesAgreeIgnoresDuplicates() {
+    # ["x", "x"] has the same length as ["x", "y"] and every element is in it.
+    def a as MtHaplotype init mtHaplotype("a", ["73-340", "73-340"], "263G");
+    def b as MtHaplotype init mtHaplotype("b", ["73-340", "16024-16365"], "263G");
+    def c as MtHaplotype init mtHaplotype("c", ["73-340"], "263G");
+    testing.assertFalse(mtRangesAgree($a, $b));
+    testing.assertFalse(mtRangesAgree($b, $a));
+    testing.assertTrue(mtRangesAgree($a, $c));
+    testing.assertTrue(mtRangesAgree($b, mtHaplotype("d", ["16024-16365", "73-340"], "")));
+}
+
+func repeatedDesignation() {
+    mtHaplotype("c", ["73-340"], "263G 263G");
+}
+
+func conflictingDesignation() {
+    mtHaplotype("e", ["73-340"], "263G 263A");
+}
+
+func deletedAndSubstituted() {
+    mtHaplotype("f", ["73-340"], "263G 263d");
+}
+
+func testRepeatedOrConflictingPositionsThrow() {
+    testing.assertThrows("repeatedDesignation", "lineage");
+    testing.assertThrows("conflictingDesignation", "lineage");
+    testing.assertThrows("deletedAndSubstituted", "lineage");
+    # Distinct insertion indices at one position are distinct designations.
+    def h as MtHaplotype init mtHaplotype("g", [], "315.1C 315.2C 315T");
+    testing.assertEqual(mtDesignations($h), ["315T", "315.1C", "315.2C"]);
+}
+
+func testMatchesWithinIsFalseOnACopyCountMismatch() {
+    # yMatches is false here; yMatchesWithin(0.0) is documented as yMatches.
+    def y1 as YHaplotype init yHaplotype("y1", {"DYS385": "11,14", "DYS19": "14"});
+    def y2 as YHaplotype init yHaplotype("y2", {"DYS385": "11", "DYS19": "14"});
+    testing.assertFalse(yMatches($y1, $y2));
+    testing.assertFalse(yMatchesWithin($y1, $y2, 0.0));
+    testing.assertFalse(yMatchesWithin($y1, $y2, 100.0));
+}
+
+func microvariantAgainstWhole() {
+    yStepDistance(yHaplotype("a", {"DYS458": "17.2"}), yHaplotype("b", {"DYS458": "18"}));
+}
+
+func trailingDot() {
+    yHaplotype("z", {"DYS19": "11."});
+}
+
+func leadingDot() {
+    yHaplotype("z", {"DYS19": ".5"});
+}
+
+func testMicrovariantsStepOnlyWithinTheirClass() {
+    # 17.2 -> 18 is not 0.8 of a step: no number of whole-repeat steps joins
+    # them. 17.2 -> 18.2 is exactly one step.
+    testing.assertThrows("microvariantAgainstWhole", "lineage");
+    def a as YHaplotype init yHaplotype("a", {"DYS458": "17.2", "DYS19": "14"});
+    testing.assertEqual(yStepDistance($a, yHaplotype("b", {"DYS458": "18.2", "DYS19": "15"})), 2.0);
+    testing.assertFalse(yMatchesWithin($a, yHaplotype("c", {"DYS458": "18"}), 5.0));
+    testing.assertTrue(yMatchesWithin($a, yHaplotype("d", {"DYS458": "17.20"}), 0.0));
+    testing.assertThrows("trailingDot", "lineage");
+    testing.assertThrows("leadingDot", "lineage");
 }

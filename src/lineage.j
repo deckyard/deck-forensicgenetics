@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * mtDNA and Y-STR haplotypes and their counting estimates.
@@ -34,6 +34,7 @@ use stats;
 use strings;
 use convert;
 use regex;
+use decimal;
 
 /**
  * The one-sided confidence level `lineageMatchProbability` uses.
@@ -52,7 +53,8 @@ def const MAX_POSITION as int init 999999;
  * `16189C` is `{position: 16189, insertion: 0, base: "C", kind: "sub"}`,
  * `315.1C` is `{position: 315, insertion: 1, base: "C", kind: "ins"}`, and
  * `249d` is `{position: 249, insertion: 0, base: "", kind: "del"}`.
- * @field position {int} the 1-based reference position
+ * @field position {int} the 1-based reference position; 0 for an insertion
+ *   before the first base
  * @field insertion {int} 0 for a substitution or deletion; 1, 2, ... for the
  *   n-th base inserted after `position`
  * @field base {string} the observed base; "" for a deletion
@@ -186,7 +188,8 @@ export func lineageLikelihoodRatio(k as int, n as int) {
 
 # isDigit / isBase classify one character of a difference designation. The base
 # set is the IUPAC nucleotide alphabet, so an ambiguity code from a
-# heteroplasmic position still parses.
+# heteroplasmic position still parses. A designation ending in D is read as a
+# deletion before isBase is consulted, so the code D (A/G/T) never reaches it.
 func isDigit(ch as string) {
     return strings.indexOf("0123456789", $ch) >= 0;
 }
@@ -218,7 +221,7 @@ func quickDifference(t as string) {
         }
     }
     def rest as string init $m.groups[2];
-    if ($position < 1) {
+    if ($position < 1 and $insertion == 0) {
         return $none;
     }
     if ($rest == "D" or $rest == "DEL" or $rest == "-") {
@@ -239,8 +242,12 @@ func quickDifference(t as string) {
  *
  * Accepts `16189C`, `A263G` (the reference base is dropped), `315.1C`, and the
  * deletions `249d`, `249D`, `249DEL` and `249-`. Case-insensitive; surrounding
- * whitespace is ignored. The base may be any IUPAC code. The position must be
- * in [1, 999999] and an insertion index in [1, 9999].
+ * whitespace is ignored. The base may be any IUPAC code except `D`, which is
+ * always read as a deletion (`249D`), never as the ambiguity code A/G/T. The
+ * position must be in [1, 999999] and an insertion index in [1, 9999].
+ * Position 0 is accepted for an insertion only: `0.1A` is a base inserted
+ * before position 1, the form `align` emits for an insertion before the first
+ * reference base.
  * @param text {string} the designation
  * @return {Difference} the parsed difference
  * @throws {Error} kind "lineage" if the designation does not parse
@@ -275,7 +282,7 @@ export func parseDifference(text as string) {
         fail("difference '" + $text + "': position exceeds {MAX_POSITION}");
     }
     def position as int init convert.toInt($digits);
-    if ($position < 1 or $position > MAX_POSITION) {
+    if ($position > MAX_POSITION) {
         fail("difference '" + $text + "': position must be in [1, {MAX_POSITION}]");
     }
     def insertion as int init 0;
@@ -296,6 +303,10 @@ export func parseDifference(text as string) {
         if ($insertion < 1) {
             fail("difference '" + $text + "': an insertion index starts at 1");
         }
+    }
+    if ($position == 0 and $insertion == 0) {
+        fail("difference '" + $text + "': position must be in [1, {MAX_POSITION}]; 0 is" +
+            " only valid for an insertion before the first base (0.1A)");
     }
     def rest as string init strings.join($ch[$i..], "");
     if (len($rest) == 0) {
@@ -338,7 +349,9 @@ export func formatDifference(d as Difference) {
  * @param ranges {list of string} the sequenced regions, e.g. ["16024-16365"]
  * @param text {string} the differences, e.g. "16189C 16223T 315.1C"
  * @return {MtHaplotype} the haplotype, sorted by position then insertion index
- * @throws {Error} kind "lineage" if a designation does not parse
+ * @throws {Error} kind "lineage" if a designation does not parse, or if two
+ *   designations name the same position and insertion index (a repeat such as
+ *   `263G 263G` or a conflict such as `263G 263A`)
  */
 export func mtHaplotype(id as string, ranges as list of string, text as string) {
     def flat as string init strings.replace(strings.replace($text, "\t", " "), "\n", " ");
@@ -348,7 +361,17 @@ export func mtHaplotype(id as string, ranges as list of string, text as string) 
             $out[] = parseDifference($token);
         }
     }
-    return MtHaplotype{id: $id, ranges: $ranges, differences: sortDifferences($out)};
+    def sorted as list of Difference init sortDifferences($out);
+    # After sorting, a repeated or conflicting designation (263G 263G, 263G
+    # 263A, 263G 263d) sits next to its twin. Either would count twice in
+    # mtDistance, so it is an input error.
+    for (def i in 0..len($sorted)) {
+        if ($i > 0 and sortKey($sorted[$i]) == sortKey($sorted[$i - 1])) {
+            fail("haplotype '" + $id + "': '" + formatDifference($sorted[$i - 1]) + "' and '" +
+                formatDifference($sorted[$i]) + "' name the same position");
+        }
+    }
+    return MtHaplotype{id: $id, ranges: $ranges, differences: $sorted};
 }
 
 # sortKey renders a difference as a zero-padded sortable string: position,
@@ -366,9 +389,22 @@ func pad(s as string, width as int) {
     return $out;
 }
 
-# sortDifferences orders differences by position then insertion index.
+# sortDifferences orders differences by position then insertion index, stable.
+# It sorts fixed-width string keys with lists.sort, not the structs with
+# lists.sortBy: a func value anywhere in a call tree makes the interpreter
+# deep-copy compound arguments up the chain (a caller's whole mtDNA tree in
+# mitoleaf).
 func sortDifferences(ds as list of Difference) {
-    return lists.sortBy($ds, sortKey);
+    def keys as list of string init [];
+    for (def i in 0..len($ds)) {
+        $keys[] = sortKey($ds[$i]) + pad(convert.toString($i), 7);
+    }
+    $keys = lists.sort($keys);
+    def out as list of Difference init [];
+    for (def k in $keys) {
+        $out[] = $ds[convert.toInt($k[10..len($k)])];
+    }
+    return $out;
 }
 
 /**
@@ -406,6 +442,82 @@ export func mtMatches(a as MtHaplotype, b as MtHaplotype) {
  * @return {int} the number of differing designations
  */
 export func mtDistance(a as MtHaplotype, b as MtHaplotype) {
+    def n as int init mergeDistance($a, $b);
+    if ($n >= 0) {
+        return $n;
+    }
+    return setDistance($a, $b);
+}
+
+# mergeDistance is mtDistance by one merge over the two difference lists,
+# ordered by (position, insertion) as mtHaplotype leaves them. Designations
+# differ whenever (position, insertion) does; at an equal key the same kind
+# and base give the same designation, anything else is rendered and compared.
+# It returns -1 when either list is not strictly ascending or holds an unknown
+# kind (a struct literal); setDistance handles those. Keys are compared inline:
+# a helper call per comparison cost more than the comparison.
+func mergeDistance(a as MtHaplotype, b as MtHaplotype) {
+    if (not mergeable($a) or not mergeable($b)) {
+        return -1;
+    }
+    def na as int init len($a.differences);
+    def nb as int init len($b.differences);
+    def i as int init 0;
+    def j as int init 0;
+    def n as int init 0;
+    while ($i < $na and $j < $nb) {
+        def c as int init $a.differences[$i].position - $b.differences[$j].position;
+        if ($c == 0) {
+            $c = $a.differences[$i].insertion - $b.differences[$j].insertion;
+        }
+        if ($c < 0) {
+            $n = $n + 1;
+            $i = $i + 1;
+        } elseif ($c > 0) {
+            $n = $n + 1;
+            $j = $j + 1;
+        } else {
+            if (not sameDifference($a.differences[$i], $b.differences[$j])) {
+                $n = $n + 2;
+            }
+            $i = $i + 1;
+            $j = $j + 1;
+        }
+    }
+    return $n + ($na - $i) + ($nb - $j);
+}
+
+# mergeable reports whether every difference has a known kind and a larger
+# (position, insertion) than the one before.
+func mergeable(h as MtHaplotype) {
+    def lastPos as int init -1;
+    def lastIns as int init 0;
+    for (def i in 0..len($h.differences)) {
+        def k as string init $h.differences[$i].kind;
+        def p as int init $h.differences[$i].position;
+        def q as int init $h.differences[$i].insertion;
+        if ($k != "sub" and $k != "ins" and $k != "del") {
+            return false;
+        }
+        if ($p < $lastPos or ($p == $lastPos and $q <= $lastIns)) {
+            return false;
+        }
+        $lastPos = $p;
+        $lastIns = $q;
+    }
+    return true;
+}
+
+# sameDifference reports whether two differences at one key render alike.
+func sameDifference(x as Difference, y as Difference) {
+    if ($x.kind == $y.kind and $x.base == $y.base) {
+        return true;
+    }
+    return formatDifference($x) == formatDifference($y);
+}
+
+# setDistance is the symmetric difference of the designation sets.
+func setDistance(a as MtHaplotype, b as MtHaplotype) {
     def da as list of string init mtDesignations($a);
     def db as list of string init mtDesignations($b);
     def inA as map of string to bool init setOf($da);
@@ -436,20 +548,15 @@ func setOf(xs as list of string) {
 
 /**
  * Whether two haplotypes declare the same sequenced ranges, in any order.
+ * Duplicates are ignored: the ranges compare as sets.
  * @param a {MtHaplotype} one haplotype
  * @param b {MtHaplotype} the other
  * @return {bool} true if each declares exactly the ranges the other does
  */
 export func mtRangesAgree(a as MtHaplotype, b as MtHaplotype) {
-    if (len($a.ranges) != len($b.ranges)) {
-        return false;
-    }
-    for (def r in $a.ranges) {
-        if (not lists.contains($b.ranges, $r)) {
-            return false;
-        }
-    }
-    return true;
+    # Compared as sets: a range listed twice is still one range, and a count
+    # check plus membership would let ["x", "x"] agree with ["x", "y"].
+    return lists.sort(maps.keys(setOf($a.ranges))) == lists.sort(maps.keys(setOf($b.ranges)));
 }
 
 # --- alignment to the reference ---------------------------------------------
@@ -470,12 +577,25 @@ def const DIR_LEFT as int init 2;
 /**
  * The longest sequence `align` accepts, in bases.
  *
- * Banded alignment of near-identical sequences is roughly linear (about 1.2 s
- * at this cap), but divergent sequences widen the band towards the full
- * O(nm) matrix. The cap makes a whole-genome call fail at once instead of
- * appearing to hang. The control region is about 1.1 kb.
+ * Banded alignment of near-identical sequences is roughly linear (about 0.7 s
+ * at this cap with a dozen differences). The cap makes a whole-genome call
+ * fail at once instead of appearing to hang. The control region is about
+ * 1.1 kb.
  */
 export def const MAX_ALIGN_LENGTH as int init 5000;
+
+/**
+ * The most matrix cells one banded pass of `align` may fill.
+ *
+ * Divergent sequences widen the band towards the full O(nm) matrix, at about
+ * 1.5 us per cell; the doubling passes before the last add at most as much
+ * again, so the cap holds a call to about 4 s. It admits a full-width
+ * alignment of two 1100-base sequences (a whole control region, however
+ * divergent), and a band of half-width 124 at `MAX_ALIGN_LENGTH`. A control
+ * region against the rCRS with a few dozen differences needs a band of 16 to
+ * 32 (under 75000 cells).
+ */
+export def const MAX_ALIGN_CELLS as int init 1250000;
 
 # clean strips whitespace and upper-cases a sequence, so a FASTA block pasted
 # with line breaks aligns as one string.
@@ -500,13 +620,15 @@ def const NEG as int init -1000000000;
 
 # The first band half-width tried. Two aligned mtDNA sequences differ by a
 # handful of positions, so the optimal path hugs the diagonal and a narrow band
-# holds it; the width doubles until the path no longer touches the edge.
+# holds it; the width doubles until the band's score proves no path outside it
+# can do as well (see `alignBand`).
 def const INITIAL_BAND as int init 16;
 
-# Band is one banded pass: the two gapped strings, and whether the band was wide
-# enough for the result to be the true global optimum.
+# Band is one banded pass: the two gapped strings, their score, and whether the
+# band was wide enough for the result to be the true global optimum.
 def struct Band {
     exact as bool,
+    score as int,
     top as string,
     bottom as string
 };
@@ -516,10 +638,11 @@ def struct Band {
 # Full Needleman-Wunsch is O(nm), which for a control region is a million cells
 # of interpreted arithmetic. Instead the matrix is computed only within a band
 # around the diagonal, which is where the optimal path lies when the sequences
-# are near-identical - as an mtDNA haplotype and its reference are. If the
-# traceback touches the band edge the band may have constrained it, so the width
-# doubles and the pass repeats; at full width the band is the whole matrix, so
-# the result is always the true optimum, never an approximation.
+# are near-identical - as an mtDNA haplotype and its reference are. A band is
+# accepted only when its score beats every path that leaves it (`bandBound`);
+# otherwise the width doubles and the pass repeats. At full width the band is
+# the whole matrix, so the result is always the true optimum, never an
+# approximation.
 func alignPair(reference as string, sample as string) {
     def r as list of string init strings.chars($reference);
     def s as list of string init strings.chars($sample);
@@ -530,15 +653,31 @@ func alignPair(reference as string, sample as string) {
     if ($w > $limit) {
         $w = $limit;
     }
+    checkBandCells(len($r), len($s), $w);
     def band as Band init alignBand($rb, $sb, $r, $s, $w);
     while (not $band.exact and $w < $limit) {
         $w = $w * 2;
-        if ($w > $limit) {
+        # A band at least as wide as a row costs as much as the full matrix,
+        # so go straight to full width rather than pay for a pass that might
+        # still not prove the optimum.
+        if ($w > $limit or 2 * $w + 1 >= len($s) + 1) {
             $w = $limit;
         }
+        checkBandCells(len($r), len($s), $w);
         $band = alignBand($rb, $sb, $r, $s, $w);
     }
     return [$band.top, $band.bottom];
+}
+
+# checkBandCells refuses a pass of half-width `w` that would fill more than
+# MAX_ALIGN_CELLS cells: m rows of 2w + 1 cells, at most the full matrix.
+func checkBandCells(m as int, n as int, w as int) {
+    def cells as int init math.min($m * (2 * $w + 1), $m * ($n + 1));
+    if ($cells > MAX_ALIGN_CELLS) {
+        fail("sequences too divergent to align: proving the optimum needs a band of" +
+            " {$cells} cells, over MAX_ALIGN_CELLS ({MAX_ALIGN_CELLS}). Align a shorter" +
+            " region, or check that the sample belongs to this reference region");
+    }
 }
 
 # alignBand fills the cells within `w` of the diagonal and traces back through
@@ -554,7 +693,7 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
     if (math.abs($m - $n) > $w) {
         # The end cell lies outside the band, so this width cannot even express
         # the alignment. Ask for a wider one.
-        return Band{exact: false, top: "", bottom: ""};
+        return Band{exact: false, score: NEG, top: "", bottom: ""};
     }
     # Two score rows are live at a time, held in one list and alternated by
     # index: $p is the row just finished, $q the one being filled. Rotating
@@ -631,27 +770,39 @@ func alignBand(rb as bytes, sb as bytes, r as list of string, s as list of strin
         $los[] = $lo;
         $p = $q;
     }
-    return traceback($dirs, $los, $r, $s, $w);
+    def score as int init $rows[$p * $width + $n];
+    # A traceback that merely stays off the band edge proves nothing: a path
+    # far outside the band can still score higher. The band is exact when its
+    # score beats the best any path leaving it could reach; a tie widens too,
+    # so the traceback equals the full-width one.
+    def exact as bool init $w >= math.max($m, $n) or $score > bandBound($m, $n, $w);
+    return traceback($dirs, $los, $r, $s, $exact, $score);
 }
 
-# traceback walks the stored moves back to the origin, reporting whether the
-# path ever touched the band edge - which is what tells `alignPair` the width
-# may have constrained the result.
+# bandBound is the highest score any alignment path leaving the band of
+# half-width `w` can reach (the Fickett / Ukkonen bound). Such a path visits
+# diagonal i - j = w + 1 or -(w + 1) and ends on diagonal m - n, so it has at
+# least g = 2(w + 1) - |m - n| gap moves, and with them at most (m + n - g) / 2
+# diagonal moves, each worth at most MATCH. Its score is therefore at most
+# floor((m + n - g) / 2) * MATCH + g * GAP.
+func bandBound(m as int, n as int, w as int) {
+    def g as int init 2 * ($w + 1) - math.abs($m - $n);
+    return (($m + $n - $g) // 2) * MATCH + $g * GAP;
+}
+
+# traceback walks the stored moves back to the origin and packs the result.
 func traceback(
     dirs as list of bytes,
     los as list of int,
     r as list of string,
     s as list of string,
-    w as int) {
+    exact as bool,
+    score as int) {
     def i as int init len($r);
     def j as int init len($s);
-    def exact as bool init true;
     def gappedRef as list of string init [];
     def gappedSample as list of string init [];
     while ($i > 0 or $j > 0) {
-        if ($i - $j >= $w or $j - $i >= $w) {
-            $exact = false;
-        }
         def move as int init $dirs[$i][$j - $los[$i]];
         if ($i > 0 and $j > 0 and $move == DIR_DIAG) {
             $gappedRef[] = $r[$i - 1];
@@ -670,39 +821,63 @@ func traceback(
     }
     return Band{
         exact: $exact,
+        score: $score,
         top: strings.join(lists.reverse($gappedRef), ""),
         bottom: strings.join(lists.reverse($gappedSample), "")
     };
 }
 
-# shiftGapsRight slides every gap in `a` as far 3' as it can go without
-# breaking the alignment, which is what puts an insertion into a homopolymer
-# run at the run's 3' end - the convention that makes an extra C in the
-# 311-315 stretch read as 315.1C rather than 311.1C.
+# shiftGapsRight slides every gap run in `a` as far 3' as it can go without
+# lowering the score, which is what puts an insertion into a homopolymer or
+# tandem-repeat run at the run's 3' end - the convention that makes an extra C
+# in the 311-315 stretch read as 315.1C rather than 311.1C, and an extra CA in
+# a CA repeat land after the last unit.
+#
+# A maximal run of k gaps starting at column c moves one column right when the
+# base after it equals `b[c]`: that base moves to column c, where it matches,
+# and the run now covers c+1 .. c+k. A run that reaches the next run merges
+# with it. One left-to-right pass does every move: the output is built in a
+# list, the pending run is only a count, and each column is written once, so
+# the cost is linear in the alignment length (a swap-until-stable loop was
+# O(gaps * distance moved): 22 s for 5000 bases against one).
 func shiftGapsRight(a as string, b as string) {
     def x as list of string init strings.chars($a);
     def y as list of string init strings.chars($b);
-    def moved as bool init true;
-    while ($moved) {
-        $moved = false;
-        for (def i in 0..(len($x) - 1)) {
-            if ($x[$i] == "-" and $x[$i + 1] != "-" and $x[$i + 1] == $y[$i]) {
-                $x[$i] = $x[$i + 1];
-                $x[$i + 1] = "-";
-                $moved = true;
+    def out as list of string init [];
+    def run as int init 0;
+    for (def c in $x) {
+        if ($c == "-") {
+            $run = $run + 1;
+        } elseif ($run > 0 and $c == $y[len($out)]) {
+            # The run's first column is len($out): the base takes it and the
+            # run moves one column right.
+            $out[] = $c;
+        } else {
+            for (def k in 0..$run) {
+                $out[] = "-";
             }
+            $run = 0;
+            $out[] = $c;
         }
     }
-    return strings.join($x, "");
+    for (def k in 0..$run) {
+        $out[] = "-";
+    }
+    return strings.join($out, "");
 }
 
 /**
  * The rCRS differences of a sequenced region against its reference.
  *
  * A global Needleman-Wunsch alignment (match +1, mismatch -1, gap -2; ties
- * prefer the diagonal), with indels slid to the 3' end of any homopolymer run,
- * so an extra base in the 311-315 C-stretch reads as `315.1C`. Whitespace in
- * either sequence is ignored and bases are upper-cased.
+ * prefer the diagonal), with each indel run slid to the 3' end of any
+ * homopolymer or repeat run, so an extra base in the 311-315 C-stretch reads
+ * as `315.1C`. Whitespace in either sequence is ignored and bases are
+ * upper-cased. The alignment is computed in a band around the diagonal that
+ * widens until no path outside it can score as well, so the result is the
+ * full-matrix optimum. An insertion before the reference's first base is
+ * reported at position `refStart - 1`, which is `0.1A` when `refStart` is 1
+ * (`parseDifference` reads it back).
  *
  * Pass the rCRS (NC_012920.1) region you sequenced, with `refStart` the 1-based
  * position of its first base. EMPOP's phylogenetic alignment rules are not
@@ -712,8 +887,10 @@ func shiftGapsRight(a as string, b as string) {
  * @param refStart {int} the rCRS position of the reference's first base
  * @return {list of Difference} the differences, in position order
  * @throws {Error} kind "lineage" on an empty sequence, a non-positive
- *   `refStart`, a non-IUPAC character, or a sequence longer than
- *   `MAX_ALIGN_LENGTH`
+ *   `refStart`, a `refStart` that puts the reference's last base past position
+ *   999999, a non-IUPAC character, a sequence longer than
+ *   `MAX_ALIGN_LENGTH`, or sequences so divergent that a band pass would
+ *   exceed `MAX_ALIGN_CELLS`
  */
 export func align(reference as string, sample as string, refStart as int) {
     def r as string init clean($reference);
@@ -728,6 +905,11 @@ export func align(reference as string, sample as string, refStart as int) {
     }
     if ($refStart < 1) {
         fail("refStart must be a positive reference position");
+    }
+    # The last reference base must have a designation parseDifference accepts.
+    if ($refStart > MAX_POSITION - len($r) + 1) {
+        fail("refStart {$refStart} puts the reference's last base past position" +
+            " {MAX_POSITION}, the largest a designation may name");
     }
     def pair as list of string init alignPair($r, $s);
     def gr as string init shiftGapsRight($pair[0], $pair[1]);
@@ -773,14 +955,10 @@ func renderDifferences(gr as list of string, gs as list of string, refStart as i
  * @throws {Error} kind "lineage" as for `align`
  */
 export func mtHaplotypeFrom(id as string, reference as string, sample as string, refStart as int) {
-    def r as string init clean($reference);
-    def stop as int init $refStart + len($r) - 1;
-    def range as string init "{$refStart}-{$stop}";
-    return MtHaplotype{
-        id: $id,
-        ranges: [$range],
-        differences: align($reference, $sample, $refStart)
-    };
+    # align validates refStart before the range end is computed from it
+    def diffs as list of Difference init align($reference, $sample, $refStart);
+    def stop as int init $refStart + len(clean($reference)) - 1;
+    return MtHaplotype{id: $id, ranges: ["{$refStart}-{$stop}"], differences: $diffs};
 }
 
 # --- Y-STR haplotypes -------------------------------------------------------
@@ -798,6 +976,10 @@ export func yHaplotype(id as string, loci as map of string to string) {
     for (def locus in $loci) {
         if (len($locus) == 0) {
             fail("Y haplotype '" + $id + "' has an empty locus name");
+        }
+        if (not multiCopy($loci[$locus]) and len(strings.trim($loci[$locus])) > 0) {
+            repeatCount(strings.trim($loci[$locus]));
+            continue;
         }
         def parts as list of string init alleleList($loci[$locus]);
         if (len($parts) == 0) {
@@ -875,6 +1057,13 @@ export func yMatches(a as YHaplotype, b as YHaplotype) {
 # rather than being left to `convert`, so the caller sees a lineage error naming
 # the offending allele instead of a bare toFloat failure.
 func sortedAlleles(text as string) {
+    if (not multiCopy($text)) {
+        def t as string init strings.trim($text);
+        if (len($t) == 0) {
+            return [];
+        }
+        return [repeatCount($t)];
+    }
     def vals as list of float init [];
     for (def a in alleleList($text)) {
         $vals[] = repeatCount($a);
@@ -882,34 +1071,114 @@ func sortedAlleles(text as string) {
     return lists.sort($vals);
 }
 
+# MAX_ALLELE_DIGITS bounds the digits on each side of a repeat count's dot;
+# real counts have two or three, and a longer string would overflow toFloat.
+def const MAX_ALLELE_DIGITS as int init 6;
+
+# REPEAT_COUNT is a repeat count: digits, optionally one '.' with digits on
+# both sides ("11", "17.2"; not "11." or ".5").
+def const REPEAT_COUNT as string init '^[0-9]{1,6}(\.[0-9]{1,6})?$';
+
 # repeatCount parses a Y-STR allele designation as a repeat count.
 func repeatCount(allele as string) {
-    def dots as int init 0;
-    def digits as int init 0;
-    for (def ch in strings.chars($allele)) {
-        if ($ch == ".") {
-            $dots = $dots + 1;
-        } elseif (isDigit($ch)) {
-            $digits = $digits + 1;
-        } else {
-            fail("allele '" + $allele + "' is not a repeat count, so it cannot be compared");
-        }
-    }
-    if ($digits == 0 or $dots > 1) {
-        fail("allele '" + $allele + "' is not a repeat count, so it cannot be compared");
+    if (not regex.matches(REPEAT_COUNT, $allele)) {
+        fail("allele '" + $allele + "' is not a repeat count (at most {MAX_ALLELE_DIGITS}" +
+            " digits, optionally '.' and at most {MAX_ALLELE_DIGITS} more), so it cannot" +
+            " be compared");
     }
     return convert.toFloat($allele);
 }
 
+# multiCopy reports whether a designation lists more than one allele.
+func multiCopy(text as string) {
+    return strings.contains($text, ",") or strings.contains($text, "/");
+}
+
+# byRepeatCount sorts allele labels by repeat count, stable (insertion sort
+# over the parsed values: a locus has a handful of copies). No lists.sortBy:
+# see sortDifferences.
+func byRepeatCount(xs as list of string) {
+    def vals as list of float init [];
+    def out as list of string init [];
+    for (def x in $xs) {
+        def v as float init repeatCount($x);
+        def j as int init len($out);
+        $vals[] = $v;
+        $out[] = $x;
+        while ($j > 0 and $vals[$j - 1] > $v) {
+            $vals[$j] = $vals[$j - 1];
+            $out[$j] = $out[$j - 1];
+            $j = $j - 1;
+        }
+        $vals[$j] = $v;
+        $out[$j] = $x;
+    }
+    return $out;
+}
+
+# pairSteps is |x - y| for one pair of alleles, exact in decimal; -2.0 when
+# it is not a whole number of repeats.
+func pairSteps(x as string, y as string) {
+    if ($x == $y) {
+        return 0.0;
+    }
+    def d as decimal.Decimal init decimal.abs(decimal.sub($x, $y));
+    if (not decimal.isInteger($d)) {
+        return -2.0;
+    }
+    return decimal.toFloat($d);
+}
+
+# locusSteps is the stepwise distance at one locus, exact in decimal: the
+# alleles of each side are sorted by repeat count and paired, and each pair
+# contributes |x - y|. It returns -1.0 when the copy counts differ and -2.0
+# when a pair differs by a non-integer (17.2 against 18): a microvariant is
+# reached from another allele only through alleles with the same fractional
+# part, so such a pair has no stepwise distance.
+func locusSteps(x as string, y as string) {
+    # Single-copy on both sides (most loci): no split, no sort.
+    if (not multiCopy($x) and not multiCopy($y)) {
+        def tx as string init strings.trim($x);
+        def ty as string init strings.trim($y);
+        if (len($tx) > 0 and len($ty) > 0) {
+            def vx as float init repeatCount($tx);
+            def vy as float init repeatCount($ty);
+            # whole counts of at most 6 digits are exact in float
+            if (not strings.contains($tx, ".") and not strings.contains($ty, ".")) {
+                return math.abs($vx - $vy);
+            }
+            return pairSteps($tx, $ty);
+        }
+    }
+    def xs as list of string init byRepeatCount(alleleList($x));
+    def ys as list of string init byRepeatCount(alleleList($y));
+    if (len($xs) != len($ys)) {
+        return -1.0;
+    }
+    # Each pair is a whole number of repeats, exact in float, so the sum is.
+    def total as float init 0.0;
+    for (def i in 0..len($xs)) {
+        def d as float init pairSteps($xs[$i], $ys[$i]);
+        if ($d < 0.0) {
+            return -2.0;
+        }
+        $total = $total + $d;
+    }
+    return $total;
+}
+
 /**
  * The stepwise distance between two Y haplotypes: the sum over shared loci of
- * the absolute repeat-count differences. Multi-copy loci are sorted before
- * comparing, so `"11,14"` against `"14,11"` is 0.
+ * the absolute repeat-count differences, computed exactly in decimal.
+ * Multi-copy loci are sorted before comparing, so `"11,14"` against `"14,11"`
+ * is 0. Two alleles with different fractional parts (`"17.2"` against `"18"`)
+ * are not stepwise neighbours and throw; `"17.2"` against `"18.2"` is 1 step.
  * @param a {YHaplotype} one haplotype
  * @param b {YHaplotype} the other
- * @return {float} the total stepwise distance
+ * @return {float} the total stepwise distance, a whole number
  * @throws {Error} kind "lineage" if the two share no locus, if a shared locus
- *   has different copy counts, or if an allele is not numeric
+ *   has different copy counts, if paired alleles differ in their fractional
+ *   part, or if an allele is not a repeat count
  */
 export func yStepDistance(a as YHaplotype, b as YHaplotype) {
     def shared as list of string init ySharedLoci($a, $b);
@@ -918,17 +1187,20 @@ export func yStepDistance(a as YHaplotype, b as YHaplotype) {
     }
     def total as float init 0.0;
     for (def locus in $shared) {
-        def xs as list of float init sortedAlleles($a.loci[$locus]);
-        def ys as list of float init sortedAlleles($b.loci[$locus]);
-        def na as int init len($xs);
-        def nb as int init len($ys);
-        if ($na != $nb) {
+        def x as string init $a.loci[$locus];
+        def y as string init $b.loci[$locus];
+        def d as float init locusSteps($x, $y);
+        if ($d == -1.0) {
+            def na as int init len(alleleList($x));
+            def nb as int init len(alleleList($y));
             fail("locus '" + $locus + "' has {$na} alleles in '" + $a.id + "' but {$nb} in '" +
                 $b.id + "'");
         }
-        for (def i in 0..len($xs)) {
-            $total = $total + math.abs($xs[$i] -$ys[$i]);
+        if ($d == -2.0) {
+            fail("locus '" + $locus + "': '" + $x + "' in '" + $a.id + "' and '" + $y + "' in '" +
+                $b.id + "' differ in their fractional part, so no step count joins them");
         }
+        $total = $total + $d;
     }
     return $total;
 }
@@ -937,16 +1209,31 @@ export func yStepDistance(a as YHaplotype, b as YHaplotype) {
  * Whether `yStepDistance` is at most `steps`.
  *
  * `steps = 1.0` keeps a paternal lineage together across one single-step
- * mutation; `steps = 0.0` is `yMatches`.
+ * mutation; `steps = 0.0` is `yMatches`. A shared locus where `yStepDistance`
+ * throws - different copy counts, or alleles that differ in their fractional
+ * part - makes the result false, as it does for `yMatches`.
  * @param a {YHaplotype} one haplotype
  * @param b {YHaplotype} the other
  * @param steps {float} the largest distance still counted as a match
  * @return {bool} true if the stepwise distance is at most `steps`
- * @throws {Error} kind "lineage" as for `yStepDistance`, or on a negative `steps`
+ * @throws {Error} kind "lineage" if the two share no locus, if an allele is
+ *   not a repeat count, or on a negative `steps`
  */
 export func yMatchesWithin(a as YHaplotype, b as YHaplotype, steps as float) {
     if ($steps < 0.0) {
         fail("steps must not be negative");
     }
-    return yStepDistance($a, $b) <= $steps;
+    def shared as list of string init ySharedLoci($a, $b);
+    if (len($shared) == 0) {
+        fail("Y haplotypes '" + $a.id + "' and '" + $b.id + "' share no locus");
+    }
+    def total as float init 0.0;
+    for (def locus in $shared) {
+        def d as float init locusSteps($a.loci[$locus], $b.loci[$locus]);
+        if ($d < 0.0) {
+            return false;
+        }
+        $total = $total + $d;
+    }
+    return $total <= $steps;
 }

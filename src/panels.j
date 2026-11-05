@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Built-in autosomal STR locus panels - the CODIS and European core sets and
@@ -64,6 +64,7 @@
  */
 use maps;
 use strings;
+use regex;
 
 import "./forensicgenetics.j" as forensics;
 
@@ -471,43 +472,21 @@ export func intersect(a as Panel, b as Panel) {
 # (space, underscore, hyphen, dot, slash), so "Penta_E", "penta e" and
 # "PENTA-E" all fold to "PENTAE", and "HUMVWFA31/A" to "HUMVWFA31A".
 func foldKey(name as string) {
-    def parts as list of string init [];
-    for (def ch in strings.chars(strings.upper(strings.trim($name)))) {
-        if (not strings.contains(" _-./", $ch)) {
-            $parts[] = $ch;
-        }
-    }
-    return strings.join($parts, "");
+    def key as string init strings.upper(strings.trim($name));
+    $key = strings.replace($key, " ", "");
+    $key = strings.replace($key, "_", "");
+    $key = strings.replace($key, "-", "");
+    $key = strings.replace($key, ".", "");
+    return strings.replace($key, "/", "");
 }
 
-# isDigits reports whether a string is one or more ASCII digits.
-func isDigits(s as string) {
-    if (len($s) == 0) {
-        return false;
-    }
-    for (def ch in strings.chars($s)) {
-        if (strings.indexOf("0123456789", $ch) < 0) {
-            return false;
-        }
-    }
-    return true;
-}
+# SEGMENT_NAME is the D-segment form of a locus name: "D", a chromosome
+# (digits, X or Y), "S", a number - D8S1179, DXS10135, DYS391.
+def const SEGMENT_NAME as string init "^D([0-9]+|X|Y)S[0-9]+$";
 
-# isSegmentName reports whether a folded key has the D-segment form of a
-# locus name: "D", a chromosome (digits, X or Y), "S", a number - D8S1179,
-# DXS10135, DYS391.
+# isSegmentName reports whether a folded key has the D-segment form.
 func isSegmentName(key as string) {
-    if (not strings.startsWith($key, "D")) {
-        return false;
-    }
-    def rest as string init strings.substring($key, 1, len($key));
-    def s as int init strings.indexOf($rest, "S");
-    if ($s < 1) {
-        return false;
-    }
-    def chrom as string init strings.substring($rest, 0, $s);
-    def number as string init strings.substring($rest, $s + 1, len($rest));
-    return (isDigits($chrom) or $chrom == "X" or $chrom == "Y") and isDigits($number);
+    return regex.matches(SEGMENT_NAME, $key);
 }
 
 # The locus names whose canonical spelling is not upper case, keyed by
@@ -533,11 +512,25 @@ def const ALIASES as map of string to string init {
     "AMELOGENIN": "AMEL"
 };
 
+# CANONICAL holds the canonical spellings ALIASES maps to, each its own
+# normalised form; normalizeLocus returns these unchanged without folding.
+def const CANONICAL as map of string to bool init {
+    "TH01": true,
+    "vWA": true,
+    "FGA": true,
+    "CSF1PO": true,
+    "TPOX": true,
+    "Penta D": true,
+    "Penta E": true,
+    "SE33": true,
+    "AMEL": true
+};
+
 /**
  * A locus name in the deck's canonical spelling.
  *
  * Case, spaces, underscores, hyphens, dots and slashes are ignored, and a
- * GenBank `HUM` prefix is dropped. Known names map to one spelling: `THO1`
+ * GenBank `HUM` prefix is dropped before a known name (`HUMTH01`). Known names map to one spelling: `THO1`
  * and `TH01` to `TH01`; `VWA`, `vWA31` and `HUMVWFA31/A` to `vWA`;
  * `FIBRA` to `FGA`; `CSF1P0` to `CSF1PO`; `PentaD`, `PENTA_D` to `Penta D`
  * (and E); `ACTBP2` to `SE33`; `Amelogenin` to `AMEL`. A D-segment name
@@ -548,6 +541,11 @@ def const ALIASES as map of string to string init {
  * @throws {Error} kind "panels" on an empty or blank name
  */
 export func normalizeLocus(name as string) {
+    # Already canonical: a D-segment name in upper case, or a canonical
+    # spelling, folds back to itself.
+    if (isSegmentName($name) or maps.has(CANONICAL, $name)) {
+        return $name;
+    }
     def key as string init foldKey($name);
     if (len($key) == 0) {
         fail("locus name must not be empty");
@@ -622,11 +620,19 @@ export func normalizeDb(fdb as forensics.FrequencyDb) {
 # --- narrowing to a panel ---------------------------------------------------
 
 # canonicalKeys maps each canonical locus name to the key a map actually uses,
-# so a profile typed as "THO1" is found when the panel asks for "TH01".
-func canonicalKeys(keys as list of string) {
+# so a profile typed as "THO1" is found when the panel asks for "TH01". Two
+# keys with one canonical name throw, as in normalizeProfile / normalizeDb:
+# keeping either would hide the other's data. `owner` names the source in the
+# message.
+func canonicalKeys(keys as list of string, owner as string) {
     def out as map of string to string init {};
     for (def k in $keys) {
-        $out[normalizeLocus($k)] = $k;
+        def canon as string init normalizeLocus($k);
+        if (maps.has($out, $canon)) {
+            fail($owner + ": loci '" + $out[$canon] + "' and '" + $k + "' both normalise to '" +
+                $canon + "'");
+        }
+        $out[$canon] = $k;
     }
     return $out;
 }
@@ -684,9 +690,12 @@ export func restrictDb(fdb as forensics.FrequencyDb, pan as Panel) {
  * @param pan {Panel} the panel it should cover
  * @return {list of string} the missing loci; empty if the profile covers the
  *   panel
+ * @throws {Error} kind "panels" if two of the profile's loci normalise to the
+ *   same name, as `restrictProfile` does
  */
 export func missingInProfile(p as forensics.Profile, pan as Panel) {
-    return missingFrom(canonicalKeys(maps.keys($p.loci)), $pan);
+    def owner as string init "profile '" + $p.id + "'";
+    return missingFrom(canonicalKeys(maps.keys($p.loci), $owner), $pan);
 }
 
 /**
@@ -699,9 +708,12 @@ export func missingInProfile(p as forensics.Profile, pan as Panel) {
  * @param pan {Panel} the panel it should cover
  * @return {list of string} the missing loci; empty if the table covers the
  *   panel
+ * @throws {Error} kind "panels" if two of the table's loci normalise to the
+ *   same name, as `restrictDb` does
  */
 export func missingInDb(fdb as forensics.FrequencyDb, pan as Panel) {
-    return missingFrom(canonicalKeys(forensics.loci($fdb)), $pan);
+    def owner as string init "frequency database '" + $fdb.name + "'";
+    return missingFrom(canonicalKeys(forensics.loci($fdb), $owner), $pan);
 }
 
 # missingFrom lists the panel loci absent from a canonical-name map.

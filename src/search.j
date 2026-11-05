@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * Database searching: one query profile against a list of profiles.
@@ -44,10 +44,17 @@
  *     $stain, $database, kinship.FULL_SIBLINGS, $db, 15);
  */
 use maps;
+use math;
 use lists;
+use strings;
+use convert;
 
 import "./forensicgenetics.j" as forensics;
 import "./kinship.j" as kinship;
+
+# FLOAT_MAX is the largest finite float. The interpreter raises a runtime error
+# on a product past it, so familialSearch checks before each multiplication.
+def const FLOAT_MAX as float init 1.7976931348623157e308;
 
 /**
  * Every compared locus identical.
@@ -215,12 +222,6 @@ func ibsCount(ga as forensics.Genotype, gb as forensics.Genotype) {
     return 0;
 }
 
-# sameGenotype compares two genotypes as unordered allele pairs, so a Genotype
-# literal written out of canonical order still matches.
-func sameGenotype(x as forensics.Genotype, y as forensics.Genotype) {
-    return ($x.a == $y.a and $x.b == $y.b) or ($x.a == $y.b and $x.b == $y.a);
-}
-
 # dropoutConsistent: the query is homozygous and the candidate, not identical,
 # carries the query's allele - the candidate's other allele may have dropped
 # out of the query.
@@ -288,7 +289,9 @@ func comparison(
         } else {
             $out.ibs2 = $out.ibs2 + 1;
         }
-        if (sameGenotype($query.loci[$locus], $candidate.loci[$locus])) {
+        # Two allele pairs share 2 by state exactly when they are the same
+        # unordered pair, so a Genotype literal out of canonical order matches.
+        if ($n == 2) {
             $out.matchingLoci = $out.matchingLoci + 1;
         } elseif ($opts.allowDropout and
             dropoutConsistent($query.loci[$locus], $candidate.loci[$locus])) {
@@ -329,30 +332,17 @@ func verdictRank(verdict as string) {
     return 3;
 }
 
-# A RankKey carries only what ranking reads, so the sort passes move small
-# structs rather than whole Comparisons with their per-locus maps.
-def struct RankKey {
-    pos as int,
-    verdict as int,
-    mismatches as int,
-    matching as int,
-    shared as int
-};
+# Ranking sorts plain strings with lists.sort, not structs with lists.sortBy.
+# A function that passes a function value (a sortBy key) anywhere in its call
+# tree has every compound parameter deep-copied when the caller passes a
+# top-level variable, because the callback might write that global: a search
+# over a 2000 x 24 database copied all 64 MiB of it per call.
 
-func bySharedDesc(k as RankKey) {
-    return 0 - $k.shared;
-}
-
-func byMatchingDesc(k as RankKey) {
-    return 0 - $k.matching;
-}
-
-func byMismatches(k as RankKey) {
-    return $k.mismatches;
-}
-
-func byVerdict(k as RankKey) {
-    return $k.verdict;
+# padded renders a non-negative int zero-padded to `width` digits, so equal
+# widths compare as strings the way the numbers compare.
+func padded(x as int, width as int) {
+    def digits as string init convert.toString($x);
+    return strings.repeat("0", $width - len($digits)) + $digits;
 }
 
 /**
@@ -377,30 +367,31 @@ export func search(
         fail("query profile '" + $query.id + "' has no genotypes");
     }
     def found as list of Comparison init [];
-    def keys as list of RankKey init [];
     # Indexed, not `for (def c in $database)`: that binds a copy of each
     # profile, and its whole locus map, on every pass.
+    def top as int init len($database);
     for (def i in 0..len($database)) {
         def c as Comparison init comparison($query, $database[$i], $opts, $i);
-        $keys[] = RankKey{
-            pos: $i,
-            verdict: verdictRank($c.verdict),
-            mismatches: len($c.mismatchedLoci),
-            matching: $c.matchingLoci,
-            shared: $c.sharedAlleles
-        };
+        $top = math.max($top, math.max($c.matchingLoci, $c.sharedAlleles));
+        $top = math.max($top, len($c.mismatchedLoci));
         $found[] = $c;
     }
-    # lists.sortBy is stable, so sorting by the least significant key first and
-    # the most significant last gives the lexicographic order, ties left in
+    # One key string per candidate: verdict rank, mismatches, then matching
+    # loci and shared alleles counted down from `top` (more sorts first), then
+    # database position. Every field has the same width, so string order is
+    # the lexicographic order of the tuple, and the position breaks ties in
     # database order.
-    $keys = lists.sortBy($keys, bySharedDesc);
-    $keys = lists.sortBy($keys, byMatchingDesc);
-    $keys = lists.sortBy($keys, byMismatches);
-    $keys = lists.sortBy($keys, byVerdict);
+    def width as int init len(convert.toString($top));
+    def keys as list of string init [];
+    for (def i in 0..len($found)) {
+        $keys[] = convert.toString(verdictRank($found[$i].verdict)) +
+            padded(len($found[$i].mismatchedLoci), $width) +
+            padded($top - $found[$i].matchingLoci, $width) +
+            padded($top - $found[$i].sharedAlleles, $width) + padded($i, $width);
+    }
     def out as list of Comparison init [];
-    for (def k in $keys) {
-        $out[] = $found[$k.pos];
+    for (def k in lists.sort($keys)) {
+        $out[] = $found[convert.toInt(strings.substring($k, len($k) - $width, len($k)))];
     }
     return $out;
 }
@@ -434,6 +425,19 @@ func sharedLoci(query as forensics.Profile, candidate as forensics.Profile) {
     return $out;
 }
 
+# oneLocusTables holds, per query locus the table covers, a table of that
+# locus alone.
+func oneLocusTables(fdb as forensics.FrequencyDb, query as forensics.Profile) {
+    def out as map of string to forensics.FrequencyDb init {};
+    for (def locus in $query.loci) {
+        if (maps.has($fdb.loci, $locus)) {
+            $out[$locus] = forensics.FrequencyDb{name: $fdb.name, loci: {}};
+            $out[$locus].loci[$locus] = $fdb.loci[$locus];
+        }
+    }
+    return $out;
+}
+
 # allCovered reports whether the frequency table covers every listed locus.
 func allCovered(fdb as forensics.FrequencyDb, loci as list of string) {
     for (def locus in $loci) {
@@ -444,15 +448,38 @@ func allCovered(fdb as forensics.FrequencyDb, loci as list of string) {
     return true;
 }
 
-func byLrDesc(h as FamilialHit) {
-    return 0.0 - $h.lr;
-}
-
-func byScored(h as FamilialHit) {
-    if ($h.scored) {
-        return 0;
+# rankHits orders familial hits: scored ones by LR, highest first, then the
+# unscored; ties keep database order. The LRs sort as plain floats; hits with
+# one LR are grouped under its shortest decimal form, which is distinct for
+# distinct floats.
+func rankHits(hits as list of FamilialHit) {
+    def lrs as list of float init [];
+    def byLr as map of string to list of int init {};
+    def unscored as list of FamilialHit init [];
+    for (def i in 0..len($hits)) {
+        if (not $hits[$i].scored) {
+            $unscored[] = $hits[$i];
+            continue;
+        }
+        def k as string init convert.toString($hits[$i].lr);
+        if (not maps.has($byLr, $k)) {
+            $byLr[$k] = [];
+            $lrs[] = $hits[$i].lr;
+        }
+        $byLr[$k][] = $i;
     }
-    return 1;
+    def sorted as list of float init lists.sort($lrs);
+    def out as list of FamilialHit init [];
+    for (def j in 0..len($sorted)) {
+        def k as string init convert.toString($sorted[len($sorted) - 1 - $j]);
+        for (def i in $byLr[$k]) {
+            $out[] = $hits[$i];
+        }
+    }
+    for (def h in $unscored) {
+        $out[] = $h;
+    }
+    return $out;
 }
 
 /**
@@ -477,9 +504,10 @@ func byScored(h as FamilialHit) {
  * @param minLoci {int} the fewest shared loci for a candidate to be scored;
  *   at least 1
  * @return {list of FamilialHit} one per database profile, highest LR first
- * @throws {Error} kind "search" on an empty query or `minLoci` below 1;
- *   kind "kinship" (from `kinship.kinshipLR`) on a shared locus `fdb` does
- *   not cover
+ * @throws {Error} kind "search" on an empty query, `minLoci` below 1, or a
+ *   candidate whose LR exceeds the float range (score it with
+ *   `kinship.log10KinshipLR`); kind "kinship" (from `kinship.kinshipLR`) on a
+ *   shared locus `fdb` does not cover
  */
 export func familialSearch(
     query as forensics.Profile,
@@ -499,6 +527,9 @@ export func familialSearch(
     # and multiplied in kinshipLR's own order from 1.0, so the product is
     # bit-identical to kinship.kinshipLR (asserted in the overlay).
     def cache as map of string to float init {};
+    # kinshipLRAt reads one locus; a one-locus table per query locus keeps the
+    # cost of passing the table into the core independent of its size.
+    def tables as map of string to forensics.FrequencyDb init oneLocusTables($fdb, $query);
     def out as list of FamilialHit init [];
     for (def i in 0..len($database)) {
         def loci as list of string init sharedLoci($query, $database[$i]);
@@ -524,11 +555,16 @@ export func familialSearch(
             def key as string init $locus + "\t" + $g.a + "\t" + $g.b;
             if (not maps.has($cache, $key)) {
                 $cache[$key] = kinship.kinshipLRAt(
-                    $fdb,
+                    $tables[$locus],
                     $query.loci[$locus],
                     $g,
                     $rel,
                     kinship.UNRELATED);
+            }
+            if ($lr > 1.0 and $cache[$key] > FLOAT_MAX / $lr) {
+                fail("the kinship LR of '" + $query.id + "' and '" + $database[$i].id +
+                    "' exceeds the float range (above 1.8e308); score the pair with" +
+                    " kinship.log10KinshipLR");
             }
             $lr = $lr * $cache[$key];
         }
@@ -536,6 +572,5 @@ export func familialSearch(
         $h.lr = $lr;
         $out[] = $h;
     }
-    $out = lists.sortBy($out, byLrDesc);
-    return lists.sortBy($out, byScored);
+    return rankHits($out);
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * The semi-continuous (qualitative) mixture likelihood ratio: the drop-out /
@@ -35,7 +35,7 @@
  * lumped class holding the remaining frequency (exact: those alleles are never
  * observed). Unknowns share `d`, so combinations are enumerated as multisets
  * weighted by their orderings. `MAX_UNKNOWNS` and `MAX_LOCUS_ALLELES` bound
- * the `(k(k+1)/2)^u` cost.
+ * the `(k(k+1)/2)^u` cost per locus, `MAX_COMBINATIONS` the total of a call.
  * @module mixture
  * @example
  * import "@deckyard/forensicgenetics/" as forensics;
@@ -55,7 +55,10 @@ import "./forensicgenetics.j" as forensics;
 /**
  * The most unknown contributors a hypothesis may name.
  *
- * Three unknowns at `MAX_LOCUS_ALLELES` alleles take about 4 s per locus.
+ * Three unknowns at `MAX_LOCUS_ALLELES` alleles enumerate 50116 genotype
+ * combinations per hypothesis per locus (`C(68, 3)`, 66 genotypes over 11
+ * classes), about 2.3 s; `locusLR` evaluates both hypotheses. `MAX_COMBINATIONS`
+ * caps the total over a whole mixture.
  */
 export def const MAX_UNKNOWNS as int init 3;
 
@@ -64,6 +67,22 @@ export def const MAX_UNKNOWNS as int init 3;
  * those of typed profiles, excluding the lumped class.
  */
 export def const MAX_LOCUS_ALLELES as int init 10;
+
+/**
+ * The most unknowns' genotype combinations `locusLRs`, `mixtureLR` and
+ * `log10MixtureLR` enumerate for one mixture, summed over every locus and both
+ * hypotheses; checked before any locus is evaluated.
+ *
+ * A combination costs about 35-45 µs, so the cap is about 11 s. A 24-locus
+ * three-person stain with six alleles per locus (Hp suspect plus two
+ * unknowns, Hd three unknowns) needs 107184 (3.7 s). Past the cap, score the
+ * loci in groups with `restrictMixture` and multiply.
+ */
+export def const MAX_COMBINATIONS as int init 250000;
+
+# FLOAT_MAX is the largest finite float. The interpreter raises a runtime error
+# on a product past it, so `mixtureLR` checks before each multiplication.
+def const FLOAT_MAX as float init 1.7976931348623157e308;
 
 /**
  * One hypothesis about who contributed to a mixture.
@@ -87,7 +106,11 @@ export def struct Hypothesis {
 
 # Frame is one locus prepared for one hypothesis: the allele classes the
 # unknowns' genotypes range over, and everything about them that does not
-# depend on those genotypes.
+# depend on those genotypes. `seen + flip · g` is the factor for class i when
+# all its copies drop out with probability g: `1 - g` observed, `g` not.
+# `draw[i · width + k]` is the sampling-formula
+# numerator of the unknowns drawing k copies of class i, `drawDenom` the
+# denominator of all 2u draws (`width` = 2u + 1).
 def struct Frame {
     labels as list of string,
     freq as list of float,
@@ -98,9 +121,13 @@ def struct Frame {
     knownCarry as list of bool,
     gA as list of int,
     gB as list of int,
-    hw as list of float,
-    zeros as list of int,
-    unknownPow as list of float
+    unknowns as int,
+    unknownPow as list of float,
+    width as int,
+    draw as list of float,
+    drawDenom as float,
+    seen as list of float,
+    flip as list of float
 };
 
 # --- errors -----------------------------------------------------------------
@@ -309,6 +336,19 @@ func addLabel(labels as list of string, a as string) {
     return $labels;
 }
 
+# frequencyOf is the core's floored frequency. A table with no sample size
+# (n = 0) has no floor, so an allele it does not list throws here, in this
+# module's kind.
+func frequencyOf(fdb as forensics.FrequencyDb, locus as string, allele as string) {
+    if (forensics.sampleSize($fdb, $locus) == 0 and
+        (not maps.has($fdb.loci[$locus].alleles, $allele) or
+        $fdb.loci[$locus].alleles[$allele] <= 0.0)) {
+        fail("locus '" + $locus + "' allele '" + $allele + "': no frequency in '" +
+            $fdb.name + "', and no 5/2N floor (sample size 0)");
+    }
+    return forensics.alleleFrequency($fdb, $locus, $allele);
+}
+
 # buildFrame prepares one locus for one hypothesis. Labels are the observed
 # alleles, then the typed profiles' other alleles, then (if any frequency mass
 # remains) one lumped class for every other allele.
@@ -317,7 +357,8 @@ func buildFrame(
     observed as list of string,
     locus as string,
     h as Hypothesis,
-    typed as list of forensics.Profile) {
+    typed as list of forensics.Profile,
+    theta as float) {
     if (not forensics.hasLocus($fdb, $locus)) {
         fail("frequency database '" + $fdb.name + "' has no locus '" + $locus + "'");
     }
@@ -345,13 +386,17 @@ func buildFrame(
         knownCarry: [],
         gA: [],
         gB: [],
-        hw: [],
-        zeros: [],
-        unknownPow: [1.0]
+        unknowns: $h.unknowns,
+        unknownPow: [1.0],
+        width: 2 * $h.unknowns + 1,
+        draw: [],
+        drawDenom: 1.0,
+        seen: [],
+        flip: []
     };
     def mass as float init 0.0;
     for (def i in 0..$nk) {
-        def p as float init forensics.alleleFrequency($fdb, $locus, $labels[$i]);
+        def p as float init frequencyOf($fdb, $locus, $labels[$i]);
         $mass = $mass + $p;
         $f.freq[] = $p;
         $f.observed[] = $i < $nObserved;
@@ -394,112 +439,83 @@ func buildFrame(
     }
     def nc as int init len($f.labels);
     for (def i in 0..$nc) {
-        $f.zeros[] = 0;
+        if ($f.observed[$i]) {
+            $f.seen[] = 1.0;
+            $f.flip[] = -1.0;
+        } else {
+            $f.seen[] = 0.0;
+            $f.flip[] = 1.0;
+        }
         for (def j in $i..$nc) {
             $f.gA[] = $i;
             $f.gB[] = $j;
-            $f.hw[] = hardyWeinberg($f.freq[$i], $f.freq[$j], $i == $j);
         }
     }
     # du^k for the k copies the unknowns can carry of one allele
-    for (def k in 1..2 * $h.unknowns + 1) {
+    for (def k in 1..$f.width) {
         $f.unknownPow[] = $f.unknownPow[$k - 1] * $h.unknownDropout;
+    }
+    $f.draw = drawTable($f, $theta);
+    for (def k in 0..2 * $h.unknowns) {
+        $f.drawDenom = $f.drawDenom *
+            (1.0 + ($f.typedTotal + convert.toFloat($k) - 1.0) * $theta);
     }
     return $f;
 }
 
-# hardyWeinberg is p² for a homozygote, 2pq for a heterozygote.
-func hardyWeinberg(p as float, q as float, homozygous as bool) {
-    if ($homozygous) {
-        return $p * $q;
-    }
-    return 2.0 * $p * $q;
-}
-
-# checkTyped confirms every known contributor of `h` is among the typed
-# profiles; the sampling formula is only right if their alleles are counted.
-func checkTyped(h as Hypothesis, typed as list of forensics.Profile) {
-    def ids as list of string init [];
-    for (def i in 0..len($typed)) {
-        $ids[] = $typed[$i].id;
-    }
-    for (def i in 0..len($h.known)) {
-        if (not lists.contains($ids, $h.known[$i].id)) {
-            fail("known contributor '" + $h.known[$i].id + "' of '" + $h.name +
-                "' is not among the typed profiles");
+# drawTable holds the sampling-formula numerators. Balding-Nichols: after n
+# alleles, n_a of them `a`, the next is `a` with probability
+# (n_a θ + (1-θ) p_a) / (1 + (n-1) θ). The product over the unknowns' 2u draws
+# depends only on how many copies of each class they draw, so the numerators
+# are tabled per (class, copies) and the denominators multiply once
+# (`drawDenom`). At θ = 0 the table holds p_a^k.
+func drawTable(f as Frame, theta as float) {
+    def out as list of float init [];
+    for (def i in 0..len($f.labels)) {
+        def acc as float init 1.0;
+        $out[] = $acc;
+        for (def k in 1..$f.width) {
+            $acc = $acc *
+                (($f.typedCount[$i] + convert.toFloat($k - 1)) * $theta +
+                (1.0 - $theta) * $f.freq[$i]);
+            $out[] = $acc;
         }
-    }
-}
-
-# evidenceGivenGenotypes is P(E | knowns, the unknowns' genotypes `combo`)
-# for the drop-out / drop-in model. `combo` holds genotype indices into the
-# frame's gA / gB tables. An allele is lost only if every copy drops out.
-func evidenceGivenGenotypes(f as Frame, combo as list of int, dropIn as float) {
-    def nc as int init len($f.labels);
-    def copies as list of int init $f.zeros;
-    for (def g in $combo) {
-        $copies[$f.gA[$g]] = $copies[$f.gA[$g]] + 1;
-        $copies[$f.gB[$g]] = $copies[$f.gB[$g]] + 1;
-    }
-    def out as float init 1.0;
-    def droppedIn as bool init false;
-    for (def i in 0..$nc) {
-        if ($f.knownCarry[$i] or $copies[$i] > 0) {
-            def allGone as float init $f.knownDrop[$i] * $f.unknownPow[$copies[$i]];
-            if ($f.observed[$i]) {
-                $out = $out * (1.0 - $allGone);
-            } else {
-                $out = $out * $allGone;
-            }
-        } elseif ($f.observed[$i]) {
-            $out = $out * $dropIn * $f.freq[$i];
-            $droppedIn = true;
-        }
-    }
-    if (not $droppedIn) {
-        $out = $out * (1.0 - $dropIn);
     }
     return $out;
 }
 
-# genotypesProbability is P(the unknowns carry `combo`, in that order | the
-# typed profiles) by the Balding-Nichols sampling formula: the next allele is
-# `a` with probability (n_a θ + (1-θ) p_a) / (1 + (n-1) θ) after `n` alleles,
-# `n_a` of them `a`. A heterozygote counts both orders. At θ = 0 this is the
-# product of the precomputed Hardy-Weinberg genotype frequencies.
-func genotypesProbability(f as Frame, combo as list of int, theta as float) {
-    def out as float init 1.0;
-    if ($theta == 0.0) {
-        for (def g in $combo) {
-            $out = $out * $f.hw[$g];
-        }
-        return $out;
-    }
-    # Counts of alleles drawn so far are recovered by scanning `drawn` (at most
-    # 2 · MAX_UNKNOWNS entries) rather than copying a per-label count list per
-    # combination.
-    def drawn as list of int init [];
-    def n as float init $f.typedTotal;
-    for (def g in $combo) {
-        $drawn[] = $f.gA[$g];
-        $drawn[] = $f.gB[$g];
-    }
-    for (def i in 0..len($drawn)) {
-        def a as int init $drawn[$i];
-        def na as float init $f.typedCount[$a];
-        for (def j in 0..$i) {
-            if ($drawn[$j] == $a) {
-                $na = $na + 1.0;
+# checkTyped confirms every known contributor of `h` is among the typed
+# profiles with the same genotype at `locus`; the sampling formula is only
+# right if the alleles it counts are the ones the hypothesis uses.
+func checkTyped(h as Hypothesis, typed as list of forensics.Profile, locus as string) {
+    for (def i in 0..len($h.known)) {
+        def id as string init $h.known[$i].id;
+        def at as int init -1;
+        for (def k in 0..len($typed)) {
+            if ($typed[$k].id == $id) {
+                $at = $k;
+                break;
             }
         }
-        $out = $out * ($na * $theta + (1.0 - $theta) * $f.freq[$a]) /
-            (1.0 + ($n - 1.0) * $theta);
-        $n = $n + 1.0;
-    }
-    for (def g in $combo) {
-        if ($f.gA[$g] != $f.gB[$g]) {
-            $out = $out * 2.0;
+        if ($at < 0) {
+            fail("known contributor '" + $id + "' of '" + $h.name +
+                "' is not among the typed profiles");
         }
+        if (maps.has($typed[$at].loci, $locus) and maps.has($h.known[$i].loci, $locus) and
+            $typed[$at].loci[$locus] != $h.known[$i].loci[$locus]) {
+            fail("profile '" + $id + "' has different genotypes at locus '" + $locus +
+                "' in typed and in '" + $h.name + "'");
+        }
+    }
+}
+
+# multisets is the number of non-decreasing u-tuples over g genotypes,
+# C(g + u - 1, u): the combinations `evaluate` visits.
+func multisets(g as int, u as int) {
+    def out as int init 1;
+    for (def k in 1..$u + 1) {
+        # out is C(g + k - 2, k - 1) here, so the division is exact
+        $out = $out * ($g + $k - 1) // $k;
     }
     return $out;
 }
@@ -524,21 +540,102 @@ func orderings(combo as list of int) {
     return $out // math.factorial($run);
 }
 
-# nextCombo advances a non-decreasing tuple of genotype indices in [0, g);
-# returns an empty list once every tuple has been visited.
-func nextCombo(combo as list of int, g as int) {
-    def i as int init len($combo) - 1;
-    while ($i >= 0 and $combo[$i] == $g - 1) {
-        $i = $i - 1;
+# evaluate sums P(E | knowns, G; d, c) · P(G | typed; θ) over the unknowns'
+# genotypes G, enumerated as non-decreasing tuples of genotype indices weighted
+# by their orderings. `copies` (per class) and `hetFactor` (2 per heterozygote,
+# for both allele orders) follow the tuple as it advances, so a combination
+# costs one pass over the classes and allocates nothing.
+func evaluate(f as Frame, dropIn as float) {
+    def u as int init $f.unknowns;
+    def nc as int init len($f.labels);
+    def last as int init len($f.gA) - 1;
+    def w as int init $f.width;
+    def combo as list of int init [];
+    def copies as list of int init [];
+    for (def i in 0..$nc) {
+        $copies[] = 0;
     }
-    if ($i < 0) {
-        return [];
+    for (def k in 0..$u) {
+        $combo[] = 0;
     }
-    def v as int init $combo[$i] + 1;
-    for (def j in $i..len($combo)) {
-        $combo[$j] = $v;
+    # genotype 0 is class 0 twice
+    $copies[0] = 2 * $u;
+    def hetFactor as float init 1.0;
+    def total as float init 0.0;
+    while (true) {
+        # An allele is lost only if every copy drops out; an observed allele
+        # nobody carries is a drop-in.
+        def e as float init 1.0;
+        def draws as float init 1.0;
+        def droppedIn as bool init false;
+        for (def i in 0..$nc) {
+            def c as int init $copies[$i];
+            if ($f.knownCarry[$i] or $c > 0) {
+                $e = $e *
+                    ($f.seen[$i] + $f.flip[$i] * $f.knownDrop[$i] * $f.unknownPow[$c]);
+                $draws = $draws * $f.draw[$i * $w + $c];
+            } elseif ($f.observed[$i]) {
+                $e = $e * $dropIn * $f.freq[$i];
+                $droppedIn = true;
+            }
+        }
+        if (not $droppedIn) {
+            $e = $e * (1.0 - $dropIn);
+        }
+        if ($e > 0.0) {
+            $total = $total +
+                convert.toFloat(orderings($combo)) * $hetFactor * $e * $draws /
+                $f.drawDenom;
+        }
+        # next non-decreasing tuple: bump the rightmost entry below `last` and
+        # set every entry after it to the same value
+        def i as int init $u - 1;
+        while ($i >= 0 and $combo[$i] == $last) {
+            $i = $i - 1;
+        }
+        if ($i < 0) {
+            break;
+        }
+        def v as int init $combo[$i] + 1;
+        for (def j in $i..$u) {
+            def old as int init $combo[$j];
+            $copies[$f.gA[$old]] = $copies[$f.gA[$old]] -1;
+            $copies[$f.gB[$old]] = $copies[$f.gB[$old]] -1;
+            if ($f.gA[$old] != $f.gB[$old]) {
+                $hetFactor = $hetFactor / 2.0;
+            }
+            $combo[$j] = $v;
+            $copies[$f.gA[$v]] = $copies[$f.gA[$v]] + 1;
+            $copies[$f.gB[$v]] = $copies[$f.gB[$v]] + 1;
+            if ($f.gA[$v] != $f.gB[$v]) {
+                $hetFactor = $hetFactor * 2.0;
+            }
+        }
     }
-    return $combo;
+    return $total;
+}
+
+# frameFor checks one hypothesis at one locus and prepares its frame.
+func frameFor(
+    fdb as forensics.FrequencyDb,
+    m as forensics.Mixture,
+    locus as string,
+    h as Hypothesis,
+    typed as list of forensics.Profile,
+    theta as float) {
+    checkTyped($h, $typed, $locus);
+    if (not maps.has($m.loci, $locus)) {
+        fail("mixture '" + $m.id + "' has no locus '" + $locus + "'");
+    }
+    return buildFrame($fdb, $m.loci[$locus], $locus, $h, $typed, $theta);
+}
+
+# checkDefence rejects a zero denominator before the numerator is computed.
+func checkDefence(locus as string, hd as Hypothesis, den as float) {
+    if ($den <= 0.0) {
+        fail("locus '" + $locus + "': '" + $hd.name + "' gives the evidence probability" +
+            " zero (add an unknown, drop-out or drop-in), so the ratio is undefined");
+    }
 }
 
 /**
@@ -546,8 +643,9 @@ func nextCombo(combo as list of int, g as int) {
  * summed over every genotype combination of the unknowns.
  *
  * The lower-level form of `locusLR`, with the θ conditioning set explicit.
- * `typed` must include every known contributor of `h` (normally it is
- * `conditioningProfiles(hp, hd)`). An empty observed list is valid evidence:
+ * `typed` must include every known contributor of `h`, with the same genotype
+ * at the locus (normally it is `conditioningProfiles(hp, hd)`). An empty
+ * observed list, which only a `Mixture` struct literal can hold, means
  * everything dropped out.
  * @param fdb {forensics.FrequencyDb} the reference frequencies
  * @param m {forensics.Mixture} the stain
@@ -559,8 +657,10 @@ func nextCombo(combo as list of int, g as int) {
  * @return {float} the probability of the evidence at the locus
  * @throws {Error} kind "mixture" on an invalid hypothesis, `dropIn` or
  *   `theta`; a locus the mixture or the table lacks; a typed profile not typed
- *   at the locus; a known contributor missing from `typed`; more than
- *   `MAX_LOCUS_ALLELES` alleles; or floored frequencies summing past 1
+ *   at the locus; a known contributor missing from `typed` or typed there with
+ *   a different genotype; more than `MAX_LOCUS_ALLELES` alleles; an allele the
+ *   table does not list at a locus with sample size 0; or floored frequencies
+ *   summing past 1
  */
 export func evidenceProbability(
     fdb as forensics.FrequencyDb,
@@ -573,30 +673,7 @@ export func evidenceProbability(
     checkHypothesis($h);
     checkDropIn($dropIn);
     checkTheta($theta);
-    checkTyped($h, $typed);
-    if (not maps.has($m.loci, $locus)) {
-        fail("mixture '" + $m.id + "' has no locus '" + $locus + "'");
-    }
-    def f as Frame init buildFrame($fdb, $m.loci[$locus], $locus, $h, $typed);
-    def nGenotypes as int init len($f.gA);
-    def combo as list of int init [];
-    for (def k in 0..$h.unknowns) {
-        $combo[] = 0;
-    }
-    def total as float init 0.0;
-    repeat {
-        def e as float init evidenceGivenGenotypes($f, $combo, $dropIn);
-        if ($e > 0.0) {
-            $total = $total +
-                convert.toFloat(orderings($combo)) * $e *
-                genotypesProbability($f, $combo, $theta);
-        }
-        if (len($combo) == 0) {
-            break;
-        }
-        $combo = nextCombo($combo, $nGenotypes);
-    } until (len($combo) == 0);
-    return $total;
+    return evaluate(frameFor($fdb, $m, $locus, $h, $typed, $theta), $dropIn);
 }
 
 /**
@@ -623,16 +700,16 @@ export func locusLR(
     theta as float) {
     def typed as list of forensics.Profile init conditioningProfiles($hp, $hd);
     def den as float init evidenceProbability($fdb, $m, $locus, $hd, $typed, $dropIn, $theta);
-    if ($den <= 0.0) {
-        fail("locus '" + $locus + "': '" + $hd.name + "' gives the evidence probability" +
-            " zero (add an unknown, drop-out or drop-in), so the ratio is undefined");
-    }
+    checkDefence($locus, $hd, $den);
     def num as float init evidenceProbability($fdb, $m, $locus, $hp, $typed, $dropIn, $theta);
     return $num / $den;
 }
 
 /**
  * The likelihood ratio at every locus of the mixture.
+ *
+ * Every locus is checked and its genotype combinations counted before any is
+ * evaluated.
  * @param fdb {forensics.FrequencyDb} the reference frequencies
  * @param m {forensics.Mixture} the stain
  * @param hp {Hypothesis} the prosecution hypothesis
@@ -640,7 +717,8 @@ export func locusLR(
  * @param dropIn {float} the drop-in probability `c`, in [0, 1)
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {map of string to float} locus -> LR, in mixture order
- * @throws {Error} kind "mixture" on a mixture with no loci, or as `locusLR`
+ * @throws {Error} kind "mixture" on a mixture with no loci, more than
+ *   `MAX_COMBINATIONS` genotype combinations in total, or as `locusLR`
  */
 export func locusLRs(
     fdb as forensics.FrequencyDb,
@@ -652,9 +730,33 @@ export func locusLRs(
     if (len($m.loci) == 0) {
         fail("mixture '" + $m.id + "' has no loci");
     }
-    def out as map of string to float init {};
+    def typed as list of forensics.Profile init conditioningProfiles($hp, $hd);
+    checkHypothesis($hp);
+    checkHypothesis($hd);
+    checkDropIn($dropIn);
+    checkTheta($theta);
+    # Frames alternate Hd, Hp per locus.
+    def frames as list of Frame init [];
+    def combos as int init 0;
     for (def locus in $m.loci) {
-        $out[$locus] = locusLR($fdb, $m, $locus, $hp, $hd, $dropIn, $theta);
+        $frames[] = frameFor($fdb, $m, $locus, $hd, $typed, $theta);
+        $frames[] = frameFor($fdb, $m, $locus, $hp, $typed, $theta);
+        def pair as int init len($frames) - 2;
+        $combos = $combos + multisets(len($frames[$pair].gA), $hd.unknowns) +
+            multisets(len($frames[$pair + 1].gA), $hp.unknowns);
+    }
+    if ($combos > MAX_COMBINATIONS) {
+        fail("mixture '" + $m.id + "' needs {$combos} genotype combinations over its loci" +
+            " and both hypotheses, past MAX_COMBINATIONS ({MAX_COMBINATIONS}); score fewer" +
+            " loci per call (restrictMixture) or name fewer unknowns");
+    }
+    def out as map of string to float init {};
+    def at as int init 0;
+    for (def locus in $m.loci) {
+        def den as float init evaluate($frames[$at], $dropIn);
+        checkDefence($locus, $hd, $den);
+        $out[$locus] = evaluate($frames[$at + 1], $dropIn) / $den;
+        $at = $at + 2;
     }
     return $out;
 }
@@ -670,7 +772,8 @@ export func locusLRs(
  * @param dropIn {float} the drop-in probability `c`, in [0, 1)
  * @param theta {float} the co-ancestry coefficient, in [0, 1)
  * @return {float} the likelihood ratio
- * @throws {Error} kind "mixture" as `locusLRs`
+ * @throws {Error} kind "mixture" as `locusLRs`, or if the product exceeds the
+ *   float range (use `log10MixtureLR`)
  */
 export func mixtureLR(
     fdb as forensics.FrequencyDb,
@@ -682,6 +785,11 @@ export func mixtureLR(
     def per as map of string to float init locusLRs($fdb, $m, $hp, $hd, $dropIn, $theta);
     def out as float init 1.0;
     for (def locus in $per) {
+        # `out <= 1` cannot overflow; for `out > 1` the quotient is finite
+        if ($out > 1.0 and $per[$locus] > FLOAT_MAX / $out) {
+            fail("the mixture LR of '" + $m.id + "' exceeds the float range (above" +
+                " 1.8e308); use log10MixtureLR");
+        }
         $out = $out * $per[$locus];
     }
     return $out;

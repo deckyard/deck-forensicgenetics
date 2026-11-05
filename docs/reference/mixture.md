@@ -29,8 +29,10 @@ Signatures, constants and the `Hypothesis` fields are in the
   `forensicgenetics.mixture` rejects it) is valid evidence of complete
   drop-out.
 - Cost per locus is about `(k(k+1)/2)^u / u!` terms for `k` allele classes and
-  `u` unknowns. `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10) bound it;
-  timings are in
+  `u` unknowns. `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10) bound it per
+  locus; `MAX_COMBINATIONS` (250000) bounds the total of `locusLRs`,
+  `mixtureLR` and `log10MixtureLR` over all loci and both hypotheses, checked
+  before any locus is evaluated. Timings are in
   [Limitations](../project/limitations.md#the-mixture-lr-enumerates-genotypes).
 
 Guide: [Mixtures](../casework/mixtures.md#likelihood-ratio-with-drop-out-and-drop-in).
@@ -47,11 +49,13 @@ Formulae: [Formulae and sources](../project/formulae.md#mixtures-semi-continuous
 - `dropIn` outside `[0, 1)`, `theta` outside `[0, 1)`
 - a mixture with no loci; a locus the mixture or the table lacks
 - a known or typed profile not typed at a mixture locus; a known contributor
-  missing from `typed` (`evidenceProbability`)
+  missing from `typed`, or typed there with another genotype at the locus
+  (`evidenceProbability`)
+- an allele the table does not list at a locus with `n = 0` (no floor)
 - more than `MAX_LOCUS_ALLELES` alleles at a locus, or floored frequencies of
   those alleles summing past 1
+- more than `MAX_COMBINATIONS` genotype combinations in one `locusLRs`,
+  `mixtureLR` or `log10MixtureLR` call
 - `P(E | Hd) = 0` at a locus (`locusLR` and the functions built on it)
 - a zero locus LR in `log10MixtureLR`
-
-An allele the table does not list at a locus with `n = 0` surfaces as the
-core's `"forensicgenetics"` error.
+- a `mixtureLR` product past the float maximum (use `log10MixtureLR`)
