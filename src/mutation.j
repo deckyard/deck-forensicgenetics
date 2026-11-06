@@ -654,7 +654,7 @@ func checkStepwiseAlleles(
             if ($classes[$i] != $classes[$j]) {
                 continue;
             }
-            def steps as int init math.round(math.abs($values[$i] -$values[$j]));
+            def steps as int init math.round(math.abs($values[$i] - $values[$j]));
             if ($steps > $far) {
                 $far = $steps;
                 $farI = $i;
@@ -861,7 +861,7 @@ func stationaryVector(m as MutationMatrix, nd as int, alleles as LocusAlleles) {
             if ($r == $nd - 1) {
                 $eq[] = 1.0;
             } elseif ($r == $c) {
-                $eq[] = $m.rows[$c][$r] -1.0;
+                $eq[] = $m.rows[$c][$r] - 1.0;
             } else {
                 $eq[] = $m.rows[$c][$r];
             }

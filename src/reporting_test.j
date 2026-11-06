@@ -551,7 +551,7 @@ func testIntervalShrinksWithN() {
         [0.01, 0.99],
         2000,
         3);
-    testing.assertTrue($small[1] -$small[0] > 10.0 * ($big[1] -$big[0]));
+    testing.assertTrue($small[1] - $small[0] > 10.0 * ($big[1] - $big[0]));
     testing.assertTrue($small[0] < $small[1]);
 }
 

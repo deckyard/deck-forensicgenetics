@@ -599,8 +599,8 @@ func evaluate(f as Frame, dropIn as float) {
         def v as int init $combo[$i] + 1;
         for (def j in $i..$u) {
             def old as int init $combo[$j];
-            $copies[$f.gA[$old]] = $copies[$f.gA[$old]] -1;
-            $copies[$f.gB[$old]] = $copies[$f.gB[$old]] -1;
+            $copies[$f.gA[$old]] = $copies[$f.gA[$old]] - 1;
+            $copies[$f.gB[$old]] = $copies[$f.gB[$old]] - 1;
             if ($f.gA[$old] != $f.gB[$old]) {
                 $hetFactor = $hetFactor / 2.0;
             }
