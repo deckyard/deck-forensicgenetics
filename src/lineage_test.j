@@ -527,8 +527,8 @@ func insertAt(ch as list of string, at as int, base as string) {
 # whether the initial band was too narrow, so a test can show the widening path
 # is actually being exercised rather than silently never taken.
 func assertSameAsFullWidth(ref as string, smp as string) {
-    def rb as bytes init convert.bytesFromString($ref, "utf-8");
-    def sb as bytes init convert.bytesFromString($smp, "utf-8");
+    def rb as bytes init convert.bytesFromString("utf-8", $ref);
+    def sb as bytes init convert.bytesFromString("utf-8", $smp);
     def r as list of string init strings.chars($ref);
     def s as list of string init strings.chars($smp);
     def full as Band init alignBand($rb, $sb, $r, $s, math.max(len($r), len($s)));

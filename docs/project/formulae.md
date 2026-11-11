@@ -333,7 +333,7 @@ probability at least `1 - c`; equivalently the `c` quantile of
 interval at level `2c - 1`:
 
 ```jennifer
-stats.proportionCi(k, n, 2c - 1, "clopper-pearson").upper
+stats.proportionCi("clopper-pearson", k, n, 2c - 1).upper
 ```
 
 `1 - α^(1/N)` at `k = 0` (the "rule of three" at 95%), with `α = 1 - c`;

@@ -150,7 +150,7 @@ export func haplotypeUpperBound(k as int, n as int, confidence as float) {
         return 1.0;
     }
     def twoSided as float init 2.0 * $confidence - 1.0;
-    def ci as stats.Interval init stats.proportionCi($k, $n, $twoSided, "clopper-pearson");
+    def ci as stats.Interval init stats.proportionCi("clopper-pearson", $k, $n, $twoSided);
     return $ci.upper;
 }
 
@@ -646,8 +646,8 @@ def struct Band {
 func alignPair(reference as string, sample as string) {
     def r as list of string init strings.chars($reference);
     def s as list of string init strings.chars($sample);
-    def rb as bytes init convert.bytesFromString($reference, "utf-8");
-    def sb as bytes init convert.bytesFromString($sample, "utf-8");
+    def rb as bytes init convert.bytesFromString("utf-8", $reference);
+    def sb as bytes init convert.bytesFromString("utf-8", $sample);
     def limit as int init math.max(len($r), len($s));
     def w as int init INITIAL_BAND;
     if ($w > $limit) {
