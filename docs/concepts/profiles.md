@@ -26,7 +26,8 @@ forensicgenetics.alleleValue("X");          # throws
 values:
 
 ```jennifer
-forensicgenetics.genotype("TH01", "9.3", "6") == forensicgenetics.genotype("TH01", "6", "9.3")
+def same as bool init forensicgenetics.genotype("TH01", "9.3", "6") ==
+    forensicgenetics.genotype("TH01", "6", "9.3");   # true
 ```
 
 Two numeric alleles order by repeat count (`"6"` before `"9.3"`), compared
