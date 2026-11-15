@@ -814,7 +814,7 @@ func tooManyAlleles() {
 }
 
 func testTooManyAllelesAtALocusThrows() {
-    testing.assertThrows("tooManyAlleles", "pedigree");
+    testing.assertThrows("tooManyAlleles", "limit");
     testing.assertContains(messageOf("tooManyAlleles"), "MAX_PEDIGREE_ALLELES (20)");
     # At the limit: ten unrelated founders show 20 unlisted alleles, each at
     # the floor f = 5 / 200000, so L = (2 f^2)^10.

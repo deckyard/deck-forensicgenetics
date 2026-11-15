@@ -44,6 +44,9 @@ Guide: [General pedigrees](../casework/pedigrees.md). Formulae:
 
 ## Errors
 
+`Error{kind: "limit"}`, thrown for more than `MAX_PEDIGREE_ALLELES` distinct
+alleles typed at one locus.
+
 `Error{kind: "pedigree"}`, thrown for:
 
 - an empty or duplicate member id, or an unknown sex
@@ -56,7 +59,6 @@ Guide: [General pedigrees](../casework/pedigrees.md). Formulae:
   as a loop, not as an ancestor cycle
 - a typed member carrying a locus the table does not cover, in the panel
   functions
-- more than `MAX_PEDIGREE_ALLELES` distinct alleles typed at one locus
 - a locus where the observed alleles' floored frequencies sum past 1, so
   there is no distribution to sum untyped members over
 - an empty pedigree

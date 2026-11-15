@@ -106,7 +106,8 @@ runs this case.
 Invalid input throws; no function returns a silently wrong answer. Each module
 throws its own `kind`, the module's name: `"forensicgenetics"`, `"kinship"`,
 `"pedigree"`, `"lineage"`, `"mixture"`, `"popstats"`, `"panels"`, `"search"`,
-`"xstr"`, `"reporting"`, `"mutation"`.
+`"xstr"`, `"reporting"`, `"mutation"`. A computation past one of the deck's
+size caps throws the generic kind `"limit"` instead.
 
 ```jennifer
 try {

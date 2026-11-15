@@ -95,7 +95,7 @@ func samePersonTwice() {
 
 func testHypothesisIsValidated() {
     testing.assertThrows("dropoutLengthMismatch", "mixture");
-    testing.assertThrows("tooManyUnknowns", "mixture");
+    testing.assertThrows("tooManyUnknowns", "limit");
     testing.assertThrows("negativeUnknowns", "mixture");
     testing.assertThrows("noContributor", "mixture");
     testing.assertThrows("dropoutAboveOne", "mixture");
@@ -497,7 +497,7 @@ func testCasesThatGaveWrongOrRuntimeErrorsThrowMixtureErrors() {
     testing.assertThrows("unlistedAlleleWithoutFloor", "mixture");
     testing.assertThrows("typedWithOtherGenotype", "mixture");
     testing.assertThrows("typedWithOtherGenotypeSameLabels", "mixture");
-    testing.assertThrows("tooManyCombinations", "mixture");
+    testing.assertThrows("tooManyCombinations", "limit");
 }
 
 func testZeroProbabilitiesThrowWhereTheRatioIsUndefined() {
@@ -571,7 +571,7 @@ func literalWithBadHypothesis() {
         name: "H",
         known: [],
         knownDropout: [],
-        unknowns: 9,
+        unknowns: -1,
         unknownDropout: 0.0
     };
     evidenceProbability(fixture(), stain(["10"]), "L", $h, [], 0.0, 0.0);
@@ -584,7 +584,7 @@ func testInvalidInputThrowsMixtureErrors() {
     testing.assertThrows("locusNotInTable", "mixture");
     testing.assertThrows("knownUntypedAtLocus", "mixture");
     testing.assertThrows("knownNotTyped", "mixture");
-    testing.assertThrows("tooManyAlleles", "mixture");
+    testing.assertThrows("tooManyAlleles", "limit");
     testing.assertThrows("flooredPastOne", "mixture");
     testing.assertThrows("emptyMixture", "mixture");
     testing.assertThrows("literalWithBadHypothesis", "mixture");

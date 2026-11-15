@@ -1216,7 +1216,7 @@ func stationaryTooManyAlleles() {
 }
 
 func testStationaryAlleleCap() {
-    testing.assertThrows("stationaryTooManyAlleles", "mutation");
+    testing.assertThrows("stationaryTooManyAlleles", "limit");
     def msg as string init "";
     try {
         stationaryTooManyAlleles();

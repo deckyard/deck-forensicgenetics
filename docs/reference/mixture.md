@@ -40,10 +40,15 @@ Formulae: [Formulae and sources](../project/formulae.md#mixtures-semi-continuous
 
 ## Errors
 
+`Error{kind: "limit"}`, thrown for more than `MAX_UNKNOWNS` unknowns in a
+hypothesis, more than `MAX_LOCUS_ALLELES` alleles at a locus, or more than
+`MAX_COMBINATIONS` genotype combinations in one `locusLRs`, `mixtureLR` or
+`log10MixtureLR` call.
+
 `Error{kind: "mixture"}`, thrown for:
 
 - a hypothesis with a drop-out list of the wrong length, a probability outside
-  `[0, 1]`, unknowns outside `0..MAX_UNKNOWNS`, no contributor, or one profile
+  `[0, 1]`, negative unknowns, no contributor, or one profile
   id twice
 - one profile id with different genotypes in the two hypotheses
 - `dropIn` outside `[0, 1)`, `theta` outside `[0, 1)`
@@ -52,10 +57,7 @@ Formulae: [Formulae and sources](../project/formulae.md#mixtures-semi-continuous
   missing from `typed`, or typed there with another genotype at the locus
   (`evidenceProbability`)
 - an allele the table does not list at a locus with `n = 0` (no floor)
-- more than `MAX_LOCUS_ALLELES` alleles at a locus, or floored frequencies of
-  those alleles summing past 1
-- more than `MAX_COMBINATIONS` genotype combinations in one `locusLRs`,
-  `mixtureLR` or `log10MixtureLR` call
+- floored frequencies of a locus's alleles summing past 1
 - `P(E | Hd) = 0` at a locus (`locusLR` and the functions built on it)
 - a zero locus LR in `log10MixtureLR`
 - a `mixtureLR` product past the float maximum (use `log10MixtureLR`)

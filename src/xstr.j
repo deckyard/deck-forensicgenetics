@@ -354,6 +354,17 @@ func fail(msg as string) {
     throw Error{kind: "xstr", message: $msg, file: "", line: 0, col: 0};
 }
 
+/**
+ * Throw a reached cap: the generic kind "limit", which every library uses
+ * for a size or count past its bound.
+ *
+ * @param msg {string} what is over the cap
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(msg as string) {
+    throw Error{kind: "limit", message: $msg, file: "", line: 0, col: 0};
+}
+
 # FLOAT_MAX is the largest finite float; the across-unit products check
 # against it before multiplying (the interpreter errors on overflow).
 def const FLOAT_MAX as float init 1.7976931348623157e308;
@@ -810,7 +821,7 @@ func phases(p as XProfile, u as Unit) {
         }
     }
     if ($hets > MAX_GROUP_HETEROZYGOUS_LOCI) {
-        fail("profile '" + $p.id + "' is heterozygous at {$hets} loci of linkage group '" +
+        failLimit("profile '" + $p.id + "' is heterozygous at {$hets} loci of linkage group '" +
             $u.name + "'; MAX_GROUP_HETEROZYGOUS_LOCI is {MAX_GROUP_HETEROZYGOUS_LOCI} (the" +
             " phase sum has 2^(h-1) terms)");
     }

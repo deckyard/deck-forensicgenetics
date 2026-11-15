@@ -464,7 +464,7 @@ func alignBeyondTheLengthCap() {
 
 func testAlignRefusesAnOversizedRegion() {
     # O(nm): a whole-genome region would appear to hang. Refuse it instead.
-    testing.assertThrows("alignBeyondTheLengthCap", "lineage");
+    testing.assertThrows("alignBeyondTheLengthCap", "limit");
 }
 
 # --- banded alignment: differential against a full-width pass ---------------
@@ -786,7 +786,7 @@ func alignTooDivergent() {
 }
 
 func testAlignRefusesABandPastTheCellCap() {
-    testing.assertThrows("alignTooDivergent", "lineage");
+    testing.assertThrows("alignTooDivergent", "limit");
 }
 
 func testGapShiftIsLinear() {

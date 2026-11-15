@@ -80,6 +80,17 @@ func fail(msg as string) {
     throw Error{kind: "pedigree", message: $msg, file: "", line: 0, col: 0};
 }
 
+/**
+ * Throw a reached cap: the generic kind "limit", which every library uses
+ * for a size or count past its bound.
+ *
+ * @param msg {string} what is over the cap
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(msg as string) {
+    throw Error{kind: "limit", message: $msg, file: "", line: 0, col: 0};
+}
+
 # --- building a pedigree ----------------------------------------------------
 
 /**
@@ -685,7 +696,7 @@ func buildFrame(
     def labels as list of string init observedAlleles($shape, $genotypes);
     def shown as int init len($labels);
     if ($shown > MAX_PEDIGREE_ALLELES) {
-        fail("locus '" + $locus + "': the typed members show {$shown} distinct alleles," +
+        failLimit("locus '" + $locus + "': the typed members show {$shown} distinct alleles," +
             " more than MAX_PEDIGREE_ALLELES ({MAX_PEDIGREE_ALLELES})");
     }
     def freq as list of float init [];

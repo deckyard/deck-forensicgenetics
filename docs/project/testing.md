@@ -206,7 +206,7 @@ Conventions:
 - Builders return copies and never mutate an argument.
 - Throw rather than guess, with a message naming what was wrong. Never drop a
   locus silently or return zero where no answer exists.
-- One error `kind` per module.
+- One error `kind` per module; a reached cap is the generic `"limit"`.
 - A docblock on every export, with `@param`, `@return` and `@throws`.
 - A test with a hand-derived expectation.
 

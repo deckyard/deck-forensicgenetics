@@ -63,6 +63,9 @@ PM scaling are in [Formulae and sources](../project/formulae.md#familias-mutatio
 
 ## Errors
 
+`Error{kind: "limit"}`, thrown for PM over more than `MAX_STATIONARY_ALLELES`
+detectable alleles.
+
 `Error{kind: "mutation"}`, thrown for:
 
 - a rate or `rate2` outside `[0, 1)`, a range not above 0, `rate + rate2`
@@ -78,7 +81,6 @@ PM scaling are in [Formulae and sources](../project/formulae.md#familias-mutatio
   a hand-built `MutationSpec` with `range` not above 0
 - a matrix entry outside `[0, 1]` or a row not summing to 1 (a Proportional
   rate too high for the frequencies)
-- PM over more than `MAX_STATIONARY_ALLELES` detectable alleles
 - a PM transformation that does not exist (a scaled diagonal below 0, common
   with a rare allele) or a matrix with no unique stationary distribution
   (Stepwise with microvariants and `rate2` 0)

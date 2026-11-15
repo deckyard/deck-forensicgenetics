@@ -101,6 +101,17 @@ func fail(msg as string) {
     throw Error{kind: "lineage", message: $msg, file: "", line: 0, col: 0};
 }
 
+/**
+ * Throw a reached cap: the generic kind "limit", which every library uses
+ * for a size or count past its bound.
+ *
+ * @param msg {string} what is over the cap
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(msg as string) {
+    throw Error{kind: "limit", message: $msg, file: "", line: 0, col: 0};
+}
+
 # --- counting estimators ----------------------------------------------------
 
 # checkCount validates a (k, N) observation pair.
@@ -674,7 +685,7 @@ func alignPair(reference as string, sample as string) {
 func checkBandCells(m as int, n as int, w as int) {
     def cells as int init math.min($m * (2 * $w + 1), $m * ($n + 1));
     if ($cells > MAX_ALIGN_CELLS) {
-        fail("sequences too divergent to align: proving the optimum needs a band of" +
+        failLimit("sequences too divergent to align: proving the optimum needs a band of" +
             " {$cells} cells, over MAX_ALIGN_CELLS ({MAX_ALIGN_CELLS}). Align a shorter" +
             " region, or check that the sample belongs to this reference region");
     }
@@ -899,7 +910,7 @@ export func align(reference as string, sample as string, refStart as int) {
         fail("both the reference and the sample must be non-empty");
     }
     if (len($r) > MAX_ALIGN_LENGTH or len($s) > MAX_ALIGN_LENGTH) {
-        fail("sequence longer than {MAX_ALIGN_LENGTH} bases: alignment is O(nm), so a" +
+        failLimit("sequence longer than {MAX_ALIGN_LENGTH} bases: alignment is O(nm), so a" +
             " whole-genome region would take far longer than anyone expects it to." +
             " Align the sequenced region (the control region is ~1.1 kb), not the genome");
     }

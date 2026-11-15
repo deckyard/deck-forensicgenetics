@@ -747,8 +747,8 @@ func tooHeterozygousPair() {
 }
 
 func testGroupHeterozygosityCap() {
-    testing.assertThrows("tooHeterozygousMatch", "xstr");
-    testing.assertThrows("tooHeterozygousPair", "xstr");
+    testing.assertThrows("tooHeterozygousMatch", "limit");
+    testing.assertThrows("tooHeterozygousPair", "limit");
     # One more locus, but homozygous: 2^(h-1) phases at 2 f^2 each.
     def h as int init MAX_GROUP_HETEROZYGOUS_LOCI;
     near(

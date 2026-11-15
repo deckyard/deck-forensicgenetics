@@ -215,6 +215,17 @@ func fail(msg as string) {
     throw Error{kind: "mutation", message: $msg, file: "", line: 0, col: 0};
 }
 
+/**
+ * Throw a reached cap: the generic kind "limit", which every library uses
+ * for a size or count past its bound.
+ *
+ * @param msg {string} what is over the cap
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(msg as string) {
+    throw Error{kind: "limit", message: $msg, file: "", line: 0, col: 0};
+}
+
 func checkRate(rate as float, what as string) {
     if ($rate < 0.0 or $rate >= 1.0) {
         fail($what + " must be in [0, 1)");
@@ -505,7 +516,7 @@ export func mutationMatrix(model as MutationSpec, alleles as LocusAlleles) {
         return $m;
     }
     if ($model.stationary and $nd > MAX_STATIONARY_ALLELES) {
-        fail("locus '" + $alleles.locus + "': {$nd} detectable alleles under a stationary" +
+        failLimit("locus '" + $alleles.locus + "': {$nd} detectable alleles under a stationary" +
             " model; MAX_STATIONARY_ALLELES is {MAX_STATIONARY_ALLELES}");
     }
     if ($model.model == MODEL_EQUAL) {

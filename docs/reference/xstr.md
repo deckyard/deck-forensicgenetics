@@ -44,6 +44,9 @@ Guide: [X-chromosomal STRs](../casework/x-chromosome.md).
 
 ## Errors
 
+`Error{kind: "limit"}`, thrown for a female heterozygous at more than
+`MAX_GROUP_HETEROZYGOUS_LOCI` loci of a group.
+
 `Error{kind: "xstr"}`, thrown for:
 
 - an unknown sex; a male profile with two alleles at a locus; an empty allele
@@ -59,8 +62,7 @@ Guide: [X-chromosomal STRs](../casework/x-chromosome.md).
   past `forensicgenetics.MAX_FREQUENCY_SUM`), a group name or locus already in
   the model, an unlisted haplotype with no floor
 - a profile with no locus (match probability), no shared locus, a shared
-  locus nothing covers, a partly typed group, a female heterozygous at more than `MAX_GROUP_HETEROZYGOUS_LOCI` loci of a
-  group
+  locus nothing covers, a partly typed group
 - an alternative hypothesis giving the observations probability zero, the
   `log10` of an exclusion, a maternal exclusion in a trio
 - a non-numeric allele where the daughter indices' mutation model needs a

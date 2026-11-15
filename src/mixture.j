@@ -136,6 +136,17 @@ func fail(msg as string) {
     throw Error{kind: "mixture", message: $msg, file: "", line: 0, col: 0};
 }
 
+/**
+ * Throw a reached cap: the generic kind "limit", which every library uses
+ * for a size or count past its bound.
+ *
+ * @param msg {string} what is over the cap
+ * @throws {Error} kind "limit", always
+ */
+func failLimit(msg as string) {
+    throw Error{kind: "limit", message: $msg, file: "", line: 0, col: 0};
+}
+
 # --- hypotheses -------------------------------------------------------------
 
 # checkProbability rejects a probability outside [0, 1].
@@ -154,8 +165,12 @@ func checkHypothesis(h as Hypothesis) {
         fail("hypothesis '" + $h.name + "' has {$nk} known contributors but {$nd}" +
             " drop-out probabilities");
     }
-    if ($h.unknowns < 0 or $h.unknowns > MAX_UNKNOWNS) {
+    if ($h.unknowns < 0) {
         fail("hypothesis '" + $h.name + "': unknown contributors must be 0 to" +
+            " {MAX_UNKNOWNS}, got {$h.unknowns}");
+    }
+    if ($h.unknowns > MAX_UNKNOWNS) {
+        failLimit("hypothesis '" + $h.name + "': unknown contributors must be 0 to" +
             " {MAX_UNKNOWNS}, got {$h.unknowns} - the genotype sum grows as" +
             " (alleles²)^unknowns");
     }
@@ -373,7 +388,7 @@ func buildFrame(
     }
     def nk as int init len($labels);
     if ($nk > MAX_LOCUS_ALLELES) {
-        fail("locus '" + $locus + "' has {$nk} distinct alleles among the stain and the" +
+        failLimit("locus '" + $locus + "' has {$nk} distinct alleles among the stain and the" +
             " typed profiles; at most {MAX_LOCUS_ALLELES} can be enumerated");
     }
     def f as Frame init Frame{
@@ -746,7 +761,7 @@ export func locusLRs(
             multisets(len($frames[$pair + 1].gA), $hp.unknowns);
     }
     if ($combos > MAX_COMBINATIONS) {
-        fail("mixture '" + $m.id + "' needs {$combos} genotype combinations over its loci" +
+        failLimit("mixture '" + $m.id + "' needs {$combos} genotype combinations over its loci" +
             " and both hypotheses, past MAX_COMBINATIONS ({MAX_COMBINATIONS}); score fewer" +
             " loci per call (restrictMixture) or name fewer unknowns");
     }

@@ -63,7 +63,9 @@ def lr as float init forensicgenetics.matchLikelihoodRatio($db, $suspect,
 
 Every module throws `Error` with its own `kind`: `"forensicgenetics"`,
 `"kinship"`, `"pedigree"`, `"lineage"`, `"mixture"`, `"popstats"`, `"panels"`,
-`"search"`, `"xstr"`, `"reporting"` or `"mutation"`.
+`"search"`, `"xstr"`, `"reporting"` or `"mutation"`. A reached size cap
+(`MAX_COMBINATIONS`, `MAX_PEDIGREE_ALLELES`, `MAX_ALIGN_CELLS`, ...) is the
+generic `Error{kind: "limit"}` instead, as in every library.
 
 Start with [Installing the deck](getting-started/installation.md) and the
 [Quick start](getting-started/quick-start.md). Every formula and its source is

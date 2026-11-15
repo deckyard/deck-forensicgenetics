@@ -38,6 +38,10 @@ Guide: [Lineage markers](../casework/lineage.md). Formulae:
 
 ## Errors
 
+`Error{kind: "limit"}`, thrown by `align` and `mtHaplotypeFrom` for a sequence
+longer than `MAX_ALIGN_LENGTH` or a band pass over `MAX_ALIGN_CELLS`
+(sequences too divergent).
+
 `Error{kind: "lineage"}`, thrown for:
 
 - a non-positive `N`, a `k` outside `[0, N]`, or a confidence outside
@@ -49,9 +53,7 @@ Guide: [Lineage markers](../casework/lineage.md). Formulae:
 - an unknown `kind` in `formatDifference`
 - in `align` and `mtHaplotypeFrom`: an empty sequence, a non-positive
   `refStart`, a `refStart` that puts the last reference base past 999999, a
-  non-IUPAC character, a sequence longer than
-  `MAX_ALIGN_LENGTH`, or a band pass over `MAX_ALIGN_CELLS` (sequences too
-  divergent)
+  non-IUPAC character
 - an empty locus name, a locus with no allele, or a Y-STR allele that is not a
   repeat count (1-6 digits, optionally `.` and 1-6 digits: `11.`, `.5` and
   `1234567` are not)
