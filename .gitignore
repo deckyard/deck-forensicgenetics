@@ -10,3 +10,4 @@ vendor/
 .ci-fixtures/
 .jfmt-*.tmp
 .docblocks-*/
+.check-tiny-*/
