@@ -48,3 +48,4 @@
 - [Formulae and sources](project/formulae.md)
 - [Limitations](project/limitations.md)
 - [Testing and contributing](project/testing.md)
+- [Design](design.md)
