@@ -35,6 +35,7 @@
 - [kinship](reference/kinship.md)
 - [pedigree](reference/pedigree.md)
 - [lineage](reference/lineage.md)
+- [emp](reference/emp.md)
 - [mixture](reference/mixture.md)
 - [popstats](reference/popstats.md)
 - [panels](reference/panels.md)

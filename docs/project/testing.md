@@ -14,7 +14,7 @@ jennifer test src/pedigree_test.j --filter='.*Peeling.*'
 jennifer test src/kinship_test.j --format=tap
 ```
 
-495 tests across eleven overlays. Statement coverage of `forensicgenetics.j` is
+523 tests across twelve overlays. Statement coverage of `forensicgenetics.j` is
 99.2%; the two uncovered lines are the zero-RMP guard in `reciprocalLR`, which
 only a product underflowing to zero reaches, and the final `return 0` of
 `compareAlleles`, unreachable because identical labels return early.
@@ -187,6 +187,7 @@ with the code: every signature, field and constant value, and every docblock's
 | a pair of people and a relationship | `kinship.j` |
 | three or more people joined by parentage | `pedigree.j` |
 | a haploid, non-recombining marker | `lineage.j` |
+| EMPOP's EMP files | `emp.j` |
 | a mixed stain and contributor hypotheses | `mixture.j` |
 | a frequency table or genotype sample as a whole | `popstats.j` |
 | locus names and kit panels | `panels.j` |
@@ -197,8 +198,8 @@ with the code: every signature, field and constant value, and every docblock's
 
 Dependencies run `forensicgenetics.j ← {kinship.j, pedigree.j, mixture.j, popstats.j, panels.j}`
 `forensicgenetics.j ← reporting.j` and
-`{forensicgenetics.j, kinship.j} ← {search.j, xstr.j, mutation.j}`; `lineage.j`
-and the core import nothing from the deck. A reader deck imports the core to
+`{forensicgenetics.j, kinship.j} ← {search.j, xstr.j, mutation.j}` and
+`lineage.j ← emp.j`; `lineage.j` and the core import nothing from the deck. A reader deck imports the core to
 produce a `FrequencyDb`; the core must not learn about a reader.
 
 Conventions:

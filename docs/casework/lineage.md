@@ -114,6 +114,59 @@ reference is bundled. `mtHaplotypeFrom` records the range
   over `MAX_ALIGN_CELLS` (1,250,000 cells), throw. Timings are in
   [Limitations](../project/limitations.md#alignment-cost-grows-with-the-region-and-with-divergence).
 
+## EMPOP's EMP files
+
+EMPOP takes and exports mtDNA population data as EMP files: tab-delimited
+text, `#` comments, a `#!` line naming the sequenced range(s) for the
+haplotypes below it, and one haplotype per line (sample ID, haplogroup,
+count, then one difference per cell):
+
+```
+# Example population, 3 samples
+#! 16024-576
+S1	H1c	1	16519C	263G	315.1C	477C
+S2	H5	1	16304C	263G	315.1C	456T
+S3	H2a2a1	1	
+```
+
+The `emp` module reads such a file into `lineage.MtHaplotype` values and
+writes them back. It does no I/O; pass the file's text:
+
+```jennifer
+import "@deckyard/forensicgenetics/emp.j" as emp;
+import "@deckyard/forensicgenetics/lineage.j" as lineage;
+
+def db as emp.EmpFile init emp.readEmp(fs.readString("population.emp"));
+def evidence as lineage.MtHaplotype init lineage.mtHaplotype("evidence",
+    ["16024-576"], "16304C 263G 315.1C 456T");
+def k as int init emp.empCount($db, $evidence);
+def p as float init lineage.lineageMatchProbability($k, emp.empSampleSize($db));
+```
+
+`empSampleSize` sums the counts (an entry with count 0 is excluded), and
+`empCount` sums those of the entries with the same differences over the same
+ranges. A haplotype typed over other ranges than the file's is not counted:
+compare like with like.
+
+`readEmp` is strict and names the line of what it refuses: a malformed range,
+sample ID or count, a repeated sample, a difference `lineage` cannot parse, a
+position outside the ranges or past 16569, an insertion `315.2C` without
+`315.1C`. Those are the checks of EMPOP's EMPCheck that need no reference
+sequence. To submit your own data, build entries and write the file:
+
+```jennifer
+def h as lineage.MtHaplotype init lineage.mtHaplotype("S4", ["16024-576"],
+    "16189C 73G 263G 315.1C");
+def file as emp.EmpFile init emp.EmpFile{
+    comments: ["Example population, 1 sample"],
+    entries: [emp.empEntry($h, "?", 1)]
+};
+def text as string init emp.writeEmp($file);
+```
+
+`writeEmp` lists the differences in range order, so `16189C` comes before
+`73G` in a `16024-576` control region, as EMPOP writes them.
+
 ## Y-STR haplotypes
 
 A repeat count per locus. Multi-copy loci (DYS385a/b, DYS389I/II reported

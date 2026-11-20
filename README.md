@@ -9,7 +9,7 @@ STR random match probabilities with the NRC II theta correction, mixture
 CPI / CPE, semi-continuous (LRmix) mixture likelihood ratios, kinship and trio
 paternity likelihood ratios (with Familias mutation models and silent
 alleles), whole-pedigree likelihoods by Elston-Stewart peeling, mtDNA / Y-STR
-haplotype statistics, and X-STR kinship and daughter paternity likelihood
+haplotype statistics with EMPOP's EMP files read and written, and X-STR kinship and daughter paternity likelihood
 ratios. For the population samples behind a table: Weir & Cockerham
 F-statistics (θ / F_ST) and a genotypic linkage-disequilibrium test. For
 reporting: the size-bias correction, a Dirichlet posterior bound on a match

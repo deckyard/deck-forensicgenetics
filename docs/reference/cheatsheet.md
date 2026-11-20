@@ -5,7 +5,7 @@
 
 Every export of `@deckyard/forensicgenetics`. The module pages
 ([forensicgenetics](forensicgenetics.md), [kinship](kinship.md),
-[pedigree](pedigree.md), [lineage](lineage.md), [mixture](mixture.md),
+[pedigree](pedigree.md), [lineage](lineage.md), [emp](emp.md), [mixture](mixture.md),
 [popstats](popstats.md), [panels](panels.md), [search](search.md),
 [xstr](xstr.md), [reporting](reporting.md), [mutation](mutation.md)) list each
 module's rules and errors.
@@ -14,6 +14,7 @@ module's rules and errors.
 import "@deckyard/forensicgenetics/" as forensicgenetics;
 import "@deckyard/forensicgenetics/kinship.j" as kinship;
 import "@deckyard/forensicgenetics/lineage.j" as lineage;
+import "@deckyard/forensicgenetics/emp.j" as emp;
 import "@deckyard/forensicgenetics/mixture.j" as mixture;
 import "@deckyard/forensicgenetics/pedigree.j" as pedigree;
 import "@deckyard/forensicgenetics/popstats.j" as popstats;
@@ -248,6 +249,43 @@ A repeat count per locus; multi-copy loci as `"11,14"` or `"11/14"`.
 |---|---|
 | `id as string` | a caller-chosen label |
 | `loci as map of string to string` | locus name -> allele designation(s) |
+
+## `emp`
+
+| Function | Returns | Does |
+|---|---|---|
+| `emp.readEmp(text)` | `EmpFile` | Read an EMP file's text; strict, errors name the line. |
+| `emp.writeEmp(f)` | `string` | EMP text: comments, `#!` lines where the ranges change, one line per entry. |
+| `emp.empEntry(h, haplogroup, count)` | `EmpEntry` | Checked entry from a haplotype, differences sorted. |
+| `emp.empDesignation(d)` | `string` | A difference as EMP writes it: `16189C`, `315.1C`, `249DEL`. |
+| `emp.empSampleSize(f)` | `int` | Summed counts, `N` for `lineage`'s estimates. |
+| `emp.empCount(f, h)` | `int` | Summed counts of the entries with `h`'s differences and ranges, `k`. |
+
+| Constant | Type | Value | Means |
+|---|---|---|---|
+| `emp.GENOME_LENGTH` | `int` | `16569` | Length of the rCRS; the largest position a range or difference may name. |
+| `emp.MAX_COUNT` | `int` | `9999` | Largest count a haplotype line may carry. |
+| `emp.MAX_ENTRIES` | `int` | `200000` | Most haplotypes `readEmp` takes from one file. |
+
+### `emp.EmpEntry`
+
+One haplotype line of an EMP file.
+
+| Field | Holds |
+|---|---|
+| `haplotype as lineage.MtHaplotype` | the sample ID as `id`, the ranges of the `#!` line above it, and its differences from the rCRS |
+| `haplogroup as string` | the haplogroup as written; "?" if unknown |
+| `count as int` | how often the haplotype was seen, 0 to `MAX_COUNT`; 0 excludes it from analysis |
+| `line as int` | the 1-based line it was read from; 0 for an entry built with `empEntry` |
+
+### `emp.EmpFile`
+
+An EMP file.
+
+| Field | Holds |
+|---|---|
+| `comments as list of string` | the comment lines above the first `#!` line, without the `#` and one following space |
+| `entries as list of EmpEntry` | the haplotype lines, in file order |
 
 ## `mixture`
 

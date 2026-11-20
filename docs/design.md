@@ -12,21 +12,24 @@ allele-frequency tables the caller supplies:
   alleles following Familias;
 - whole-pedigree likelihoods by Elston-Stewart peeling;
 - mtDNA and Y-STR lineage statistics, rCRS difference notation and a banded
-  alignment that produces it;
+  alignment that produces it, and EMPOP's EMP files of mtDNA haplotypes;
 - X-STR kinship and daughter paternity;
 - population statistics (forensic efficiency, HWE tests, F-statistics, LD
   tests), kit panels, direct and familial database search, and reporting aids
   (size-bias correction, a posterior bound on the RMP, the ENFSI verbal
   scale).
 
-The deck reads no file format and does no I/O, so it needs no capability and
-runs on `jennifer-tiny`.
+The deck does no I/O, so it needs no capability and runs on `jennifer-tiny`.
+The one file format it knows, EMP, it takes and returns as text.
 
 Out of scope:
 
 - **Reading published tables and run files.** Reader decks build the deck's
   values: `@deckyard/strider` turns STRidER frequency files into a
-  `FrequencyDb`. The core never imports a reader deck. Fragment analysis
+  `FrequencyDb`. The core never imports a reader deck. EMP is the exception
+  (`emp.j`): a line of it is a `lineage.MtHaplotype` in the notation
+  `lineage` already parses, so a separate deck would hold little but a call
+  into this one. Fragment analysis
   (capillary-electrophoresis traces to called alleles, over the `abif` deck)
   is planned as separate work.
 - **Fully continuous mixture models** (peak heights, EuroForMix-style
@@ -37,13 +40,21 @@ Out of scope:
 
 ## Decisions
 
-- **Eleven modules, each importable alone.** The core
+- **Twelve modules, each importable alone.** The core
   (`forensicgenetics.j`) holds the shared types (`FrequencyDb`,
   `LocusFrequencies`, `Genotype`, `Profile`, `Mixture`), the frequency floor
   and NRC II genotype frequencies. `kinship`, `pedigree`, `mixture`,
   `lineage`, `popstats`, `panels`, `search`, `xstr`, `reporting` and
-  `mutation` sit on it; `lineage` imports nothing from the deck. A downstream
-  deck that needs only mtDNA notation imports `lineage.j` alone.
+  `mutation` sit on it; `lineage` imports nothing from the deck, and `emp`
+  only `lineage`. A downstream deck that needs only mtDNA notation imports
+  `lineage.j` alone.
+- **EMP files are read strictly.** EMPOP's own checker, EMPCheck, refuses a
+  malformed file rather than guessing, and so does `readEmp`, naming the line.
+  It runs the checks that need no reference: notation, positions within
+  1-16569 and the ranges, insertions numbered without a gap, unique sample
+  IDs. EMPOP's template marks the ranges with a placeholder (`#! SEQUENCE
+  RANGE 1`), which is refused too. Differences are written in range order,
+  as EMPOP lists them, so a file read and written again keeps its lines.
 - **Pure `.j`, a deck and not core.** Probability arithmetic over maps fits
   the language. The two places where the interpreter's speed binds use
   built-ins: the Clopper-Pearson bound comes from `stats.proportionCi`,
@@ -104,11 +115,12 @@ Out of scope:
 ## Errors
 
 Every module throws `Error{kind: <module>}` through its own `fail`: kinds
-`"forensicgenetics"`, `"kinship"`, `"pedigree"`, `"mixture"`, `"lineage"`,
+`"forensicgenetics"`, `"kinship"`, `"pedigree"`, `"mixture"`, `"lineage"`, `"emp"`,
 `"popstats"`, `"panels"`, `"search"`, `"xstr"`, `"reporting"` and
 `"mutation"`. A module calling another rethrows that module's error unchanged
 unless documented otherwise (the X-STR daughter indices rethrow
-`"kinship"` as `"xstr"`). `@deckyard/strider` relies on the core kind
+`"kinship"` as `"xstr"`; `emp` rethrows `"lineage"` as `"emp"` with the line
+number in front). `@deckyard/strider` relies on the core kind
 `"forensicgenetics"` for `withLocus`.
 
 The caps below throw the generic `Error{kind: "limit"}` (since 0.5.0; they
@@ -132,6 +144,8 @@ pathological input from running for hours or exhausting memory:
   hang. The band doubles until a bound proves the banded result equals the
   full matrix.
 - X-STR: `MAX_GROUP_HETEROZYGOUS_LOCI` (12) per linkage group.
+- EMP files: `MAX_ENTRIES` (200,000) haplotypes per file, several times
+  EMPOP's whole database; reading that many takes about 100 s.
 - Mutation: `MAX_STATIONARY_ALLELES` (200) for the stationary model.
 - Monte Carlo: `MAX_PERMUTATIONS` and `MAX_DRAWS` (1,000,000 each), checked
   as a range on the caller's parameter (module kind).
@@ -140,7 +154,10 @@ pathological input from running for hours or exhausting memory:
 
 ## Testing and validation
 
-- Eleven overlays, about 500 tests, no fixtures and no network.
+- Twelve overlays, about 520 tests, no fixtures and no network. The EMP
+  tests use files written by hand; the reader was also run over two files
+  EMPOP publishes (273 and 202 haplotypes), which read and write back to the
+  same lines, but those files are not in the repository.
 - Expectations are derived by hand or from published sources, never captured
   from the code: the Genepop documentation's F-statistics example, exact
   enumeration of LD re-pairings, closed-form kinship values that peeling must
@@ -169,6 +186,10 @@ Floor `>=0.26.0` for `jennifer` and `jennifer-tiny`, set by `decimal`. It uses
 code: M30.3 (borrow nested collections; peeling copied 2.3 GiB on a
 300-generation chain) and M30.8 (borrow through named callbacks; `search`
 copied its whole database per call).
+
+Every call that takes an `emp.EmpFile` copies it across the module
+boundary (the M30 copy-elision work removes this): at 5000 haplotypes about
+0.06 s on `jennifer`, 1.7 s on `jennifer-tiny`.
 
 Two decks depend on this one by tag: `@deckyard/strider` (`FrequencyDb`
 construction, `MAX_FREQUENCY_SUM`, the core error kind) and `@deckyard/mitoleaf`

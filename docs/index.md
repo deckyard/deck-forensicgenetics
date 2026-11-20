@@ -20,6 +20,7 @@ This deck is part of [Deckyard](https://github.com/deckyard), community decks fo
 | What if a parent mutated, or an allele is silent? | Familias mutation models (Equal, Proportional, Stepwise, Extended stepwise, PM-stationary), sex-specific, published rates; silent alleles | [Mutation models and silent alleles](casework/mutation-models.md) |
 | What does the whole family say? | pedigree likelihood by Elston-Stewart peeling | [General pedigrees](casework/pedigrees.md) |
 | How common is this haplotype? | Clopper-Pearson upper bound on a database count | [Lineage markers](casework/lineage.md) |
+| What is in this EMPOP file, and how often does it hold the haplotype? | EMP files read and written; counts for the bound | [Lineage markers](casework/lineage.md#empops-emp-files) |
 | How informative is this table, and does its sample fit HWE? | He, PD, PIC, TPI, PE; HWE exact and permutation tests | [Population statistics](concepts/population-statistics.md) |
 | How different are the sub-populations, and are the loci independent? | Weir & Cockerham F_ST / F_IT / F_IS; genotypic LD permutation test | [Population structure and linkage](concepts/population-structure.md) |
 | Who in a database matches, or is related to, this profile? | direct comparison with IBS counts; familial ranking by kinship LR | [Database searching](casework/database-search.md) |
@@ -34,6 +35,7 @@ This deck is part of [Deckyard](https://github.com/deckyard), community decks fo
 | `kinship.j` | `@deckyard/forensicgenetics/kinship.j` | relationship LRs, paternity |
 | `pedigree.j` | `@deckyard/forensicgenetics/pedigree.j` | whole-pedigree likelihoods |
 | `lineage.j` | `@deckyard/forensicgenetics/lineage.j` | mtDNA and Y-STR |
+| `emp.j` | `@deckyard/forensicgenetics/emp.j` | EMPOP's EMP files of mtDNA haplotypes |
 | `mixture.j` | `@deckyard/forensicgenetics/mixture.j` | mixture LR with drop-out and drop-in |
 | `popstats.j` | `@deckyard/forensicgenetics/popstats.j` | forensic-efficiency table, HWE tests, F-statistics, LD tests |
 | `panels.j` | `@deckyard/forensicgenetics/panels.j` | kit locus panels, locus-name normalisation |
@@ -42,9 +44,9 @@ This deck is part of [Deckyard](https://github.com/deckyard), community decks fo
 | `reporting.j` | `@deckyard/forensicgenetics/reporting.j` | sampling uncertainty of an RMP, verbal scale for an LR |
 | `mutation.j` | `@deckyard/forensicgenetics/mutation.j` | Familias mutation models, silent alleles, AABB rates |
 
-Every module except `lineage` imports the core (`search`, `xstr` and
+Every module except `lineage` and `emp` imports the core (`search`, `xstr` and
 `mutation` also `kinship`); `lineage` imports nothing from the
-deck. The core reads no published frequency format: a reader deck such as
+deck, `emp` only `lineage`. The core reads no published frequency format: a reader deck such as
 [`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
 (STRidER XML) converts one into a `FrequencyDb`.
 
@@ -62,7 +64,7 @@ def lr as float init forensicgenetics.matchLikelihoodRatio($db, $suspect,
 ```
 
 Every module throws `Error` with its own `kind`: `"forensicgenetics"`,
-`"kinship"`, `"pedigree"`, `"lineage"`, `"mixture"`, `"popstats"`, `"panels"`,
+`"kinship"`, `"pedigree"`, `"lineage"`, `"emp"`, `"mixture"`, `"popstats"`, `"panels"`,
 `"search"`, `"xstr"`, `"reporting"` or `"mutation"`. A reached size cap
 (`MAX_COMBINATIONS`, `MAX_PEDIGREE_ALLELES`, `MAX_ALIGN_CELLS`, ...) is the
 generic `Error{kind: "limit"}` instead, as in every library.

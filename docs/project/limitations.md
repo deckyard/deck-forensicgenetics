@@ -60,7 +60,7 @@ third at one homozygous locus, and the gap compounds across a profile. See
 
 ### Reading a published table is a separate deck
 
-The core reads no file format.
+The core reads no file format; `emp` reads EMPOP's EMP files.
 [`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
 converts STRidER-style XML and has its own limitations, chief among them that
 it has not been validated against a real STRidER export.
@@ -68,7 +68,8 @@ it has not been validated against a real STRidER export.
 ### No reference sequence is bundled
 
 `lineage.align` takes the rCRS (NC_012920.1) region you sequenced as an
-argument.
+argument. Without it `emp.readEmp` cannot catch a difference that names the
+reference base itself (`73A`), which EMPOP's EMPCheck refuses.
 
 ## Statistical scope
 
@@ -292,6 +293,14 @@ A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000 cells) throws instead,
 which refuses unrelated sequences past about 1100 bases and, at 5000 bases,
 anything needing a band wider than 124 (roughly 10% substitutions). Sliding
 indels 3' is linear: 5000 bases against one take 0.14 s in all.
+
+### EMP files cost about half a millisecond per haplotype
+
+Measured on 5000 haplotypes of about ten differences each (`jennifer`
+0.26.0): `emp.readEmp` 2.6 s, `emp.writeEmp` 1.4 s, `emp.empCount` 0.25 s;
+on `jennifer-tiny` 4.5 s, 1.8 s and 1.8 s. All three are linear. Most of
+`empCount` on `jennifer-tiny` is the copy of the whole file as it enters the
+module; counting several haplotypes against one file pays it once per call.
 
 ### Peeling slows as observed alleles accumulate
 

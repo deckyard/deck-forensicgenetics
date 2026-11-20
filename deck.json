@@ -1,8 +1,8 @@
 {
   "package": {
     "name": "@deckyard/forensicgenetics",
-    "version": "0.5.0",
-    "description": "Forensic and statistical genetics: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers.",
+    "version": "0.6.0",
+    "description": "Forensic and statistical genetics: STR match probabilities, kinship and paternity likelihood ratios, general-pedigree peeling, and mtDNA / Y-STR lineage markers with EMPOP's EMP files.",
     "license": "LGPL-3.0-only",
     "urls": {
       "deck": "https://raw.githubusercontent.com/deckyard/deck-forensicgenetics/main/deck.json",
@@ -20,6 +20,7 @@
       "paternity",
       "mtdna",
       "ystr",
+      "empop",
       "statistics"
     ],
     "capabilities": []

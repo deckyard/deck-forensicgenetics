@@ -105,6 +105,7 @@ jennifer run examples/paternity.j          # trio paternity across a mutation
 jennifer run examples/pedigree.j           # deficient paternity through two grandparents
 jennifer run examples/popstats.j           # forensic-efficiency table, HWE permutation test
 jennifer run examples/lineage.j            # mtDNA nomenclature and Y-STR comparison
+jennifer run examples/emp.j                # an EMPOP EMP file read, counted, written
 jennifer run examples/mixture.j            # mixture LR with drop-out and drop-in
 jennifer run examples/search.j             # direct and familial database search
 jennifer run examples/reporting.j          # size-bias LR, posterior bound, ENFSI verbal scale
@@ -117,9 +118,9 @@ jennifer run examples/popstructure.j       # F-statistics and LD tests
 
 | Path | What it is |
 | --- | --- |
-| `src/*.j` | the deck: the core `forensicgenetics.j` and ten sibling modules |
+| `src/*.j` | the deck: the core `forensicgenetics.j` and eleven sibling modules |
 | `src/*_test.j` | white-box test overlays, run with `jennifer test` |
-| `examples/` | eleven runnable programs, one per topic |
+| `examples/` | twelve runnable programs, one per topic |
 | `examples/lib/exampledb.j` | the synthetic frequency table the examples build |
 | `docs/` | this documentation |
 | `LICENSE` | the LGPL-3.0 text, with the GPL-3.0 it incorporates |

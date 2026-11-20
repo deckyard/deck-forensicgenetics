@@ -375,9 +375,11 @@ export func mtHaplotype(id as string, ranges as list of string, text as string) 
     def sorted as list of Difference init sortDifferences($out);
     # After sorting, a repeated or conflicting designation (263G 263G, 263G
     # 263A, 263G 263d) sits next to its twin. Either would count twice in
-    # mtDistance, so it is an input error.
+    # mtDistance, so it is an input error. The fields are compared directly:
+    # two sort keys per difference were a third of the time of this call.
     for (def i in 0..len($sorted)) {
-        if ($i > 0 and sortKey($sorted[$i]) == sortKey($sorted[$i - 1])) {
+        if ($i > 0 and $sorted[$i].position == $sorted[$i - 1].position and
+            $sorted[$i].insertion == $sorted[$i - 1].insertion) {
             fail("haplotype '" + $id + "': '" + formatDifference($sorted[$i - 1]) + "' and '" +
                 formatDifference($sorted[$i]) + "' name the same position");
         }
@@ -393,11 +395,12 @@ func sortKey(d as Difference) {
 }
 
 func pad(s as string, width as int) {
-    def out as string init $s;
-    while (len($out) < $width) {
-        $out = "0" + $out;
+    # One repeat, not a prepend per digit: mtHaplotype pads two keys per
+    # difference, and the loop was most of the time of reading an EMP file.
+    if (len($s) >= $width) {
+        return $s;
     }
-    return $out;
+    return strings.repeat("0", $width - len($s)) + $s;
 }
 
 # sortDifferences orders differences by position then insertion index, stable.
