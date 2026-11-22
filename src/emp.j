@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * EMPOP's EMP files: mtDNA haplotypes as text, read and written.
@@ -282,9 +282,9 @@ func normalised(h as lineage.MtHaplotype, where as string) {
 
 # commentText is a comment line without its "#" and one following space.
 func commentText(raw as string) {
-    def t as string init strings.substring($raw, 1);
+    def t as string init $raw[1..];
     if (strings.startsWith($t, " ")) {
-        $t = strings.substring($t, 1);
+        $t = $t[1..];
     }
     return $t;
 }
@@ -367,13 +367,13 @@ export func readEmp(text as string) {
         def raw as string init strings.trimRight($lines[$i]);
         def n as int init $i + 1;
         if ($i == 0 and strings.startsWith($raw, "﻿")) {
-            $raw = strings.substring($raw, 1);
+            $raw = $raw[1..];
         }
         if (len(strings.trim($raw)) == 0) {
             continue;
         }
         if (strings.startsWith($raw, "#!")) {
-            def rest as string init strings.trim(strings.substring($raw, 2));
+            def rest as string init strings.trim($raw[2..]);
             if (len($rest) == 0) {
                 fail("line {$n}: the '#!' line names no sequence range");
             }

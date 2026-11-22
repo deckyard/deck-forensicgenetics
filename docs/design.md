@@ -180,7 +180,9 @@ rates are placeholders.
 
 ## Dependencies on the interpreter
 
-Floor `>=0.26.0` for `jennifer` and `jennifer-tiny`, set by `decimal`. It uses
+Floor `>=0.27.0` for `jennifer` and `jennifer-tiny`, set by the UTF-8 codec
+of `encoding.encode`, `strings.replicate` and `testing.assertThrowsArgs`;
+`decimal` needs 0.26.0. It uses
 `stats` (the Clopper-Pearson interval) and `linalg` from the built-in libraries. Two of
 `jennifer`'s planned milestones were found here and are worked around in the
 code: M30.3 (borrow nested collections; peeling copied 2.3 GiB on a

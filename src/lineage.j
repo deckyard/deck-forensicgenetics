@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * mtDNA and Y-STR haplotypes and their counting estimates.
@@ -35,6 +35,7 @@ use strings;
 use convert;
 use regex;
 use decimal;
+use encoding;
 
 /**
  * The one-sided confidence level `lineageMatchProbability` uses.
@@ -400,7 +401,7 @@ func pad(s as string, width as int) {
     if (len($s) >= $width) {
         return $s;
     }
-    return strings.repeat("0", $width - len($s)) + $s;
+    return strings.replicate("0", $width - len($s)) + $s;
 }
 
 # sortDifferences orders differences by position then insertion index, stable.
@@ -660,8 +661,8 @@ def struct Band {
 func alignPair(reference as string, sample as string) {
     def r as list of string init strings.chars($reference);
     def s as list of string init strings.chars($sample);
-    def rb as bytes init convert.bytesFromString("utf-8", $reference);
-    def sb as bytes init convert.bytesFromString("utf-8", $sample);
+    def rb as bytes init encoding.encode("utf-8", $reference);
+    def sb as bytes init encoding.encode("utf-8", $sample);
     def limit as int init math.max(len($r), len($s));
     def w as int init INITIAL_BAND;
     if ($w > $limit) {

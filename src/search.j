@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Database searching: one query profile against a list of profiles.
@@ -342,7 +342,7 @@ func verdictRank(verdict as string) {
 # widths compare as strings the way the numbers compare.
 func padded(x as int, width as int) {
     def digits as string init convert.toString($x);
-    return strings.repeat("0", $width - len($digits)) + $digits;
+    return strings.replicate("0", $width - len($digits)) + $digits;
 }
 
 /**
@@ -391,7 +391,7 @@ export func search(
     }
     def out as list of Comparison init [];
     for (def k in lists.sort($keys)) {
-        $out[] = $found[convert.toInt(strings.substring($k, len($k) - $width, len($k)))];
+        $out[] = $found[convert.toInt($k[len($k) - $width..len($k)])];
     }
     return $out;
 }

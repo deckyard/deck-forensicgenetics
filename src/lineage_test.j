@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # White-box test overlay for lineage.j. Run with `jennifer test lineage_test.j`.
 #
@@ -422,7 +422,7 @@ func buildWithANonNumericAllele() {
 
 func buildWithAHugeAllele() {
     # 400 digits: before the cap, a runtime toFloat failure
-    yHaplotype("bad", {"DYS19": strings.repeat("9", 400)});
+    yHaplotype("bad", {"DYS19": strings.replicate("9", 400)});
 }
 
 func stepDistanceOnASevenDigitAllele() {
@@ -458,7 +458,7 @@ func testYSingleCopyStepsAreExact() {
 }
 
 func alignBeyondTheLengthCap() {
-    def long as string init strings.repeat("ACGT", (MAX_ALIGN_LENGTH // 4) + 2);
+    def long as string init strings.replicate("ACGT", (MAX_ALIGN_LENGTH // 4) + 2);
     align($long, $long, 1);
 }
 
@@ -527,8 +527,8 @@ func insertAt(ch as list of string, at as int, base as string) {
 # whether the initial band was too narrow, so a test can show the widening path
 # is actually being exercised rather than silently never taken.
 func assertSameAsFullWidth(ref as string, smp as string) {
-    def rb as bytes init convert.bytesFromString("utf-8", $ref);
-    def sb as bytes init convert.bytesFromString("utf-8", $smp);
+    def rb as bytes init encoding.encode("utf-8", $ref);
+    def sb as bytes init encoding.encode("utf-8", $smp);
     def r as list of string init strings.chars($ref);
     def s as list of string init strings.chars($smp);
     def full as Band init alignBand($rb, $sb, $r, $s, math.max(len($r), len($s)));
@@ -566,8 +566,8 @@ func testBandedAlignmentAgreesOnDivergentSequences() {
 func testALongIndelForcesTheBandWider() {
     # A 40-base deletion pushes the path further off the diagonal than the
     # initial band half-width, so this exercises the widening loop directly.
-    def ref as string init strings.repeat("ACGT", 40);
-    def smp as string init strings.substring($ref, 0, 20) + strings.substring($ref, 120, 160);
+    def ref as string init strings.replicate("ACGT", 40);
+    def smp as string init $ref[..20] + $ref[120..160];
     testing.assertTrue(assertSameAsFullWidth($ref, $smp));
 }
 
@@ -793,7 +793,7 @@ func testGapShiftIsLinear() {
     # 5000 A against one A: one A kept at position 1 and 4999 deletions slid
     # 3' to 2..5000. The swap-until-stable shift took 22 s here.
     def t0 as int init time.unixMillis(time.now());
-    def ds as list of Difference init align(strings.repeat("A", 5000), "A", 1);
+    def ds as list of Difference init align(strings.replicate("A", 5000), "A", 1);
     def ms as int init time.unixMillis(time.now()) - $t0;
     testing.assertEqual(len($ds), 4999);
     testing.assertEqual(formatDifference($ds[0]), "2d");

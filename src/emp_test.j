@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # White-box test overlay for emp.j. Run with `jennifer test emp_test.j`.
 #
@@ -103,62 +103,62 @@ func testAWrappingRangeCoversBothEnds() {
 # --- reading: refusals ------------------------------------------------------
 
 func testRefusesAHaplotypeBeforeTheFirstRange() {
-    testing.assertThrowsWith("readEmp", ["# head\nS1\tH\t1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["# head\nS1\tH\t1\t263G\n"], "emp");
 }
 
 func testRefusesMalformedRanges() {
-    testing.assertThrowsWith("readEmp", ["#! SEQUENCE RANGE 1\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#!\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 16024-16570\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 0-576\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 16024\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 16024-576,73-340\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! SEQUENCE RANGE 1\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#!\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024-16570\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 0-576\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024-576,73-340\n"], "emp");
 }
 
 func testRefusesSampleIdsEmpopRefuses() {
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS 1\tH\t1\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nSä1\tH\t1\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\n\tH\t1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS 1\tH\t1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nSä1\tH\t1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\n\tH\t1\t263G\n"], "emp");
     def f as EmpFile init readEmp("#! 1-576\nAUT-05/0038_b\tH\t1\t263G\n");
     testing.assertEqual($f.entries[0].haplotype.id, "AUT-05/0038_b");
 }
 
 func testRefusesARepeatedSampleId() {
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t263G\nS1\tH\t1\t73G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t263G\nS1\tH\t1\t73G\n"], "emp");
 }
 
 func testRefusesAMissingHaplogroupOrCount() {
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\t\t1\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1 H 1 263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\t\t1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1 H 1 263G\n"], "emp");
 }
 
 func testRefusesCountsOutsideTheRange() {
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t10000\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t-1\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\tone\t263G\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1.0\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t10000\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t-1\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\tone\t263G\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1.0\t263G\n"], "emp");
 }
 
 func testRefusesTwoVariantsInOneCell() {
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t263G 315.1C\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t263G 315.1C\n"], "emp");
 }
 
 func testRefusesWhatEmpcheckRefuses() {
     # not a designation
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t263Q\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t263Q\n"], "emp");
     # past the genome
-    testing.assertThrowsWith("readEmp", ["#! 16024-576\nS1\tH\t1\t16570A\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024-576\nS1\tH\t1\t16570A\n"], "emp");
     # outside the declared range
-    testing.assertThrowsWith("readEmp", ["#! 16024-576\nS1\tH\t1\t1000C\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 16024-16365 73-340\nS1\tH\t1\t16400C\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024-576\nS1\tH\t1\t1000C\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 16024-16365 73-340\nS1\tH\t1\t16400C\n"], "emp");
     # a second insertion without a first
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t315.2C\n"], "emp");
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t309.1C\t309.3C\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t315.2C\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t309.1C\t309.3C\n"], "emp");
     # a position named twice
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t263G\t263A\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t263G\t263A\n"], "emp");
     # an insertion before position 1, which lineage allows
-    testing.assertThrowsWith("readEmp", ["#! 1-576\nS1\tH\t1\t0.1A\n"], "emp");
+    testing.assertThrowsArgs("readEmp", ["#! 1-576\nS1\tH\t1\t0.1A\n"], "emp");
 }
 
 func testARefusalNamesItsLine() {

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Built-in autosomal STR locus panels - the CODIS and European core sets and
@@ -551,7 +551,7 @@ export func normalizeLocus(name as string) {
         fail("locus name must not be empty");
     }
     if (strings.startsWith($key, "HUM") and len($key) > 3) {
-        def bare as string init strings.substring($key, 3, len($key));
+        def bare as string init $key[3..len($key)];
         if (maps.has(ALIASES, $bare)) {
             return ALIASES[$bare];
         }

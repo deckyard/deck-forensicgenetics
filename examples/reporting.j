@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # Reporting a single-source match: the plug-in LR, the size-bias correction,
 # the FSR-GUI-0012 Bayesian estimate, a 99% posterior lower bound (allowances
