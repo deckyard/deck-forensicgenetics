@@ -515,9 +515,9 @@ markers excluded (`panels.Panel.otherMarkers`):
   core loci in the United States", *Forensic Sci. Int. Genet.* 17:33-34.
 - **ESS**: Council Resolution 2009/C 296/01 of 30 November 2009, *OJ* C 296,
   Annex 1; Gill P et al. (2006), *Forensic Sci. Int.* 156:242-244.
-- **Kits**: the manufacturers' manuals - Thermo Fisher GlobalFiler, NGM SElect
-  and Identifiler Plus user guides; Promega PowerPlex Fusion, Fusion 6C and
-  ESX 17 technical manuals; QIAGEN Investigator ESSplex SE QS and IDplex Plus
+- **Kits**: the manufacturers' manuals - Thermo Fisher GlobalFiler™, NGM SElect™
+  and Identifiler™ Plus user guides; Promega PowerPlex™ Fusion, Fusion 6C and
+  ESX 17 technical manuals; QIAGEN Investigator™ ESSplex™ SE QS and IDplex™ Plus
   handbooks.
 
 ## Database search
@@ -592,7 +592,7 @@ their contribution is crucial", Forensic Sci. Int. Genet. 5(1):27-32, for the
 X-chromosomal IBD approach; Gomes I, Pinto N, Antão-Sousa S, Gomes V, Gusmão L,
 Amorim A (2020), "Twenty years later: a comprehensive review of the X
 chromosome use in forensic genetics", Front. Genet. 11:926, Table 5 (X
-coancestry by sex), read 2026-11-05. Argus X-12 linkage groups: QIAGEN,
+coancestry by sex), read 2026-11-05. Argus™ X-12 linkage groups: QIAGEN,
 Investigator Argus X-12 QS Handbook, 07/2022, Table 1, read 2026-11-05.
 Models with recombination and linkage disequilibrium, not implemented:
 Tillmar AO, Egeland T, Lindblom B, Holmlund G, Mostad P (2011), Forensic Sci.

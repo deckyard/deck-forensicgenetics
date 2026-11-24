@@ -571,7 +571,7 @@ One candidate of a familial search.
 | `xstr.haplotypeKey(alleles)` | `string` | Alleles joined by `HAPLOTYPE_SEPARATOR`. |
 | `xstr.linkageGroup(name, loci, minFrequency, haplotypes)` | `LinkageGroup` | Linked loci with a haplotype frequency table; validated. |
 | `xstr.haplotypeFrequency(group, alleles)` | `float` | Listed frequency floored at `minFrequency`. |
-| `xstr.argusX12Groups()` | `map of string to list of string` | Argus X-12 linkage groups LG1-LG4 (QIAGEN handbook, Table 1). |
+| `xstr.argusX12Groups()` | `map of string to list of string` | Argus™ X-12 linkage groups LG1-LG4 (QIAGEN handbook, Table 1). |
 | `xstr.independentModel(db)` | `XFrequencies` | Every locus scored on its own from `db`. |
 | `xstr.withLinkageGroup(xf, group)` | `XFrequencies` | Model with the group's loci scored as one haplotype. |
 | `xstr.matchProbability(xf, p)` | `float` | Male `p`, female HW genotype frequency (phase summed), product over loci and groups. |

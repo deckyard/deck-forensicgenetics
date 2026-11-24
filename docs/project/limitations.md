@@ -99,7 +99,7 @@ implemented. A half-sibling pedigree is not a loop.
 ### Mixtures stop at the semi-continuous LR
 
 `mixture.j` uses allele presence, drop-out and drop-in (LRmix). Peak heights,
-stutter and degradation need a continuous model (EuroForMix, STRmix), which is
+stutter and degradation need a continuous model (EuroForMix, STRmix™), which is
 not implemented. Drop-out is one probability per contributor, the same at
 every locus; homozygote drop-out is the `d²` approximation, not the
 Balding & Buckleton (2009) two-parameter form. Relatives as alternative
@@ -189,7 +189,7 @@ LR as a theta-0 figure.
 
 A `LinkageGroup` is inherited as one block, with no recombination between its
 loci, and groups are multiplied as if unlinked. Neither holds exactly: the
-Argus X-12 groups span a few centimorgans within, and the groups lie on one
+Argus™ X-12 groups span a few centimorgans within, and the groups lie on one
 chromosome. The error is nil for a single meiosis from a father (his X passes
 whole) and grows with the number of female meioses between the two people.
 Models with recombination fractions and linkage disequilibrium (Tillmar et al.

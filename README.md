@@ -75,6 +75,19 @@ they differ, the licence governs.
 
 Full text: [Not a validated forensic tool](https://deckyard.github.io/deck-forensicgenetics/#not-a-validated-forensic-tool).
 
+## Trademarks
+
+GlobalFiler™, Identifiler™ and NGM SElect™ are trademarks of Thermo Fisher
+Scientific Inc. or its subsidiaries. PowerPlex™ is a trademark of Promega
+Corporation. Investigator™ is a trademark of QIAGEN GmbH. STRmix™ is a
+trademark of the New Zealand Institute for Public Health and Forensic
+Science (PHF Science, formerly ESR). Argus™, ESSplex™, IDplex™ and other
+product and company names may be trademarks of their respective owners. They
+are used only to identify the kits and software these docs refer to. This
+deck is an independent project, not affiliated with, sponsored or endorsed
+by Thermo Fisher Scientific Inc., Promega Corporation, QIAGEN GmbH or PHF
+Science.
+
 ## Licence
 
 LGPL-3.0-only, see [LICENSE](LICENSE). Copyright (C) 2026 mplx &lt;mplx@jennifer-lang.dev&gt;.

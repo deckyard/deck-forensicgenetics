@@ -179,7 +179,7 @@ Hd the unknown can carry it. At `d = 0` the suspect is excluded at D3S1358.
 ### What the model does not do
 
 - No peak heights, stutter or degradation: those need a continuous model
-  (EuroForMix, STRmix).
+  (EuroForMix, STRmix™).
 - One drop-out probability per contributor, the same at every locus.
 - Relatives as alternative contributors are not modelled.
 

@@ -114,3 +114,16 @@ This restates - and does not narrow, extend, or replace - the warranty and
 liability disclaimers of the
 [LGPL-3.0-only](https://www.gnu.org/licenses/lgpl-3.0.html) licence this deck
 is released under. Where the two differ, the licence governs.
+
+## Trademarks
+
+GlobalFiler™, Identifiler™ and NGM SElect™ are trademarks of Thermo Fisher
+Scientific Inc. or its subsidiaries. PowerPlex™ is a trademark of Promega
+Corporation. Investigator™ is a trademark of QIAGEN GmbH. STRmix™ is a
+trademark of the New Zealand Institute for Public Health and Forensic
+Science (PHF Science, formerly ESR). Argus™, ESSplex™, IDplex™ and other
+product and company names may be trademarks of their respective owners. They
+are used only to identify the kits and software these docs refer to. This
+deck is an independent project, not affiliated with, sponsored or endorsed
+by Thermo Fisher Scientific Inc., Promega Corporation, QIAGEN GmbH or PHF
+Science.

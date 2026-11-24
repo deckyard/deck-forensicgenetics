@@ -52,7 +52,7 @@ derived independently:
 - Clopper-Pearson bounds by bisecting the exact binomial CDF outside Jennifer,
   and at `k = 0` against the closed form `1 - α^(1/N)`.
 - Kit panels from the set relations and locus counts the standards and
-  manuals state (GlobalFiler = CODIS 20 + SE33, ESX 17 = ESS + D2S1338,
+  manuals state (GlobalFiler™ = CODIS 20 + SE33, ESX 17 = ESS + D2S1338,
   D16S539, D19S433, SE33), written out again in the overlay.
 - Direct-search counts by hand from genotypes written beside each candidate.
 - X-STR LRs and daughter paternity indices by hand from the X-IBD forms
@@ -62,7 +62,7 @@ derived independently:
   wide groups (up to `MAX_GROUP_HETEROZYGOUS_LOCI` heterozygous loci, every
   haplotype at the floor `f`) against closed forms (full sisters
   `1 / (2 · 4^h · f)`, daughter trio `1 / f`); the
-  Argus X-12 groups against the QIAGEN handbook's Table 1.
+  Argus™ X-12 groups against the QIAGEN handbook's Table 1.
 - Size-bias frequencies by hand from `(x + 2)/(2N + 4)` and `(x + 4)/(2N + 4)`
   on a table with `N = 100`, and with θ against the core's
   `genotypeFrequency` on a table holding the corrected frequencies.

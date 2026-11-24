@@ -96,7 +96,7 @@ applied to the father only.
 
 ## Linked loci
 
-X-STRs sit on one chromosome, and kits cluster them. The Investigator Argus
+X-STRs sit on one chromosome, and kits cluster them. The Investigator™ Argus™
 X-12 kit types twelve X-STRs in four linkage groups of three, which the
 manufacturer handles as haplotypes:
 
