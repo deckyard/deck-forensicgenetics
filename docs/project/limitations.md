@@ -288,11 +288,12 @@ cost is roughly linear in the region length. Measured with eight
 differences: 342 bp in 0.05 s, the ~1.1 kb control region in 0.15 s, 1600 bp
 in 0.22 s, 5000 bp (`lineage.MAX_ALIGN_LENGTH`, the longest accepted) in
 0.7 s. Divergent sequences widen the band towards the full quadratic
-matrix, about 1.5 µs per cell: two unrelated 1100-base sequences take 3.6 s.
-A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000 cells) throws instead,
-which refuses unrelated sequences past about 1100 bases and, at 5000 bases,
-anything needing a band wider than 124 (roughly 10% substitutions). Sliding
-indels 3' is linear: 5000 bases against one take 0.14 s in all.
+matrix, about 1.3 µs per cell: two unrelated 1100-base sequences take 4.3 s
+on Jennifer 0.27.0. A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000
+cells) throws instead, which refuses unrelated sequences past about 1100
+bases and, at 5000 bases, anything needing a band wider than 124 (roughly 10%
+substitutions). Sliding indels 3' is linear: 5000 bases against one take
+0.14 s in all.
 
 ### EMP files cost about half a millisecond per haplotype
 
