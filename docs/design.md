@@ -180,7 +180,7 @@ rates are placeholders.
 
 ## Dependencies on the interpreter
 
-Floor `>=0.27.0` for `jennifer` and `jennifer-tiny`, set by the UTF-8 codec
+Floor `>=0.28.0` (the calls 0.29.0 removes are replaced by their 0.28.0 forms) for `jennifer` and `jennifer-tiny`, set by the UTF-8 codec
 of `encoding.encode`, `strings.replicate` and `testing.assertThrowsArgs`;
 `decimal` needs 0.26.0. It uses
 `stats` (the Clopper-Pearson interval) and `linalg` from the built-in libraries. Two of

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 
 # White-box test overlay for lineage.j. Run with `jennifer test lineage_test.j`.
 #
@@ -792,9 +792,9 @@ func testAlignRefusesABandPastTheCellCap() {
 func testGapShiftIsLinear() {
     # 5000 A against one A: one A kept at position 1 and 4999 deletions slid
     # 3' to 2..5000. The swap-until-stable shift took 22 s here.
-    def t0 as int init time.unixMillis(time.now());
+    def t0 as int init time.unixMilliseconds(time.now());
     def ds as list of Difference init align(strings.replicate("A", 5000), "A", 1);
-    def ms as int init time.unixMillis(time.now()) - $t0;
+    def ms as int init time.unixMilliseconds(time.now()) - $t0;
     testing.assertEqual(len($ds), 4999);
     testing.assertEqual(formatDifference($ds[0]), "2d");
     testing.assertEqual(formatDifference($ds[4998]), "5000d");

@@ -2,11 +2,11 @@
 
 ## Requirements
 
-Jennifer 0.27.0 or newer. Every source file declares the floor, and an older
+Jennifer 0.28.0 or newer. Every source file declares the floor, and an older
 interpreter refuses to load the deck:
 
 ```jennifer
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 ```
 
 The deck has no deck dependencies and runs on both `jennifer` and

@@ -16,7 +16,7 @@ reporting: the size-bias correction, a Dirichlet posterior bound on a match
 probability and the ENFSI verbal scale for a likelihood ratio.
 It works on profiles and reference allele frequencies; the only sequence
 input is an mtDNA region aligned to the rCRS to name its differences.
-Requires Jennifer 0.27.0 or newer; no deck dependencies, and it runs on
+Requires Jennifer 0.28.0 or newer; no deck dependencies, and it runs on
 `jennifer-tiny`.
 
 ## Install
