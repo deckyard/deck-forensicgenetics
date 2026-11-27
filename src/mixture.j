@@ -73,10 +73,10 @@ export def const MAX_LOCUS_ALLELES as int init 10;
  * `log10MixtureLR` enumerate for one mixture, summed over every locus and both
  * hypotheses; checked before any locus is evaluated.
  *
- * A combination costs about 35-45 µs, so the cap is about 11 s. A 24-locus
- * three-person stain with six alleles per locus (Hp suspect plus two
- * unknowns, Hd three unknowns) needs 107184 (3.7 s). Past the cap, score the
- * loci in groups with `restrictMixture` and multiply.
+ * A combination costs about 28 µs on Jennifer 0.28.0, so the cap is about
+ * 7 s. A 24-locus three-person stain with six alleles per locus (Hp suspect
+ * plus two unknowns, Hd three unknowns) needs 107184 (3.0 s). Past the cap,
+ * score the loci in groups with `restrictMixture` and multiply.
  */
 export def const MAX_COMBINATIONS as int init 250000;
 

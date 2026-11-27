@@ -288,39 +288,50 @@ cost is roughly linear in the region length. Measured with eight
 differences: 342 bp in 0.05 s, the ~1.1 kb control region in 0.15 s, 1600 bp
 in 0.22 s, 5000 bp (`lineage.MAX_ALIGN_LENGTH`, the longest accepted) in
 0.7 s. Divergent sequences widen the band towards the full quadratic
-matrix, about 1.3 µs per cell: two unrelated 1100-base sequences take 4.3 s
-on Jennifer 0.27.0. A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000
+matrix, about 0.9 µs per cell: two unrelated 1100-base sequences take 3.1 s
+on Jennifer 0.28.0. A band pass over `lineage.MAX_ALIGN_CELLS` (1,250,000
 cells) throws instead, which refuses unrelated sequences past about 1100
 bases and, at 5000 bases, anything needing a band wider than 124 (roughly 10%
 substitutions). Sliding indels 3' is linear: 5000 bases against one take
 0.14 s in all.
 
-### EMP files cost about half a millisecond per haplotype
+### EMP files cost about a quarter of a millisecond per haplotype
 
-Measured on 5000 haplotypes of about ten differences each (`jennifer`
-0.26.0): `emp.readEmp` 2.6 s, `emp.writeEmp` 1.4 s, `emp.empCount` 0.25 s;
-on `jennifer-tiny` 4.5 s, 1.8 s and 1.8 s. All three are linear. Most of
+5000 haplotypes of about ten differences each:
+
+| Call | `jennifer` 0.28.0 | `jennifer-tiny` 0.26.0 |
+|---|---|---|
+| `emp.readEmp` | 1.2 s | 4.5 s |
+| `emp.writeEmp` | 0.7 s (estimate) | 1.8 s |
+| `emp.empCount` | 0.09 s | 1.8 s |
+
+All three are linear: `readEmp` at `emp.MAX_ENTRIES` (200,000) takes 52 s
+and 1.4 GB on `jennifer` 0.28.0. The `writeEmp` time is an estimate, half
+the 1.4 s measured on 0.26.0. Most of
 `empCount` on `jennifer-tiny` is the copy of the whole file as it enters the
 module; counting several haplotypes against one file pays it once per call.
 
 ### Peeling slows as observed alleles accumulate
 
 Pedigree size costs linear time: validation and peeling are iterative and
-build their indexes once per call. Measured, one locus with four observed
-alleles: a 2000-generation chain (4002 members) validates in 0.2 s and peels in
-1.9 s; one couple with 1000 children peels in 0.6 s.
+build their indexes once per call. Estimates for Jennifer 0.28.0, half the
+times measured on earlier releases, one locus with four observed alleles: a
+2000-generation chain (4002 members) validates in 0.1 s and peels in 1 s; one
+couple with 1000 children peels in 0.3 s.
 
 Cost grows steeply with the number of distinct alleles the typed members show
-at a locus. Measured, one locus: 4 alleles 11 ms, 8 alleles 90 ms, 12 alleles
-0.6 s, 16 alleles 1.9 s, 20 alleles 5.4 s. A large family at a highly
+at a locus. Estimated the same way, one locus: 4 alleles 6 ms, 8 alleles 45 ms,
+12 alleles 0.3 s, 16 alleles 1 s, 20 alleles 2.7 s. A large family at a highly
 polymorphic locus can take seconds per locus. Lumping already limits this to
 the observed alleles; `pedigree.MAX_PEDIGREE_ALLELES` (20) makes a locus with
-more throw. At the limit, an untyped couple with ten typed children takes
-2.8 s per locus. A typed parent contributes one genotype instead of `G`, so
-families with typed parents are cheap: a 24-locus missing-person `pedigreeLR`
-(10 members, 8 typed, 15-allele table) takes 0.16 s.
+more throw. At the limit, an untyped couple with ten typed children takes 1.8 s
+per locus (measured on 0.28.0). A typed parent contributes one genotype instead
+of `G`, so families with typed parents are cheap: a 24-locus missing-person
+`pedigreeLR` (10 members, 8 typed, 15-allele table) takes about 0.08 s
+(estimate).
 
-An eight-locus pedigree LR with four typed people takes about 0.1 s.
+An eight-locus pedigree LR with four typed people takes about 0.05 s
+(estimate).
 Peeling memory does not grow with pedigree size.
 
 ### Building a database or profile one entry at a time is quadratic
@@ -348,24 +359,32 @@ rows, the pedigree graph walks).
 ### Building a large pedigree is quadratic
 
 `withFounder` and `withChild` return copies, so an `n`-member pedigree copies
-the member map `n` times: 1.5 s for 1000 members, 23 s for 4000.
+the member map `n` times: about 0.8 s for 1000 members, 12 s for 4000
+(estimates for 0.28.0, half the earlier measurement).
 `pedigree.pedigreeOf(name, people)` builds in one pass (4000 members in
-0.05 s) with the same checks.
+0.03 s) with the same checks.
 
 ### The mixture LR enumerates genotypes
 
 `mixture.j` sums over every genotype combination of the unknowns: about
-`(k(k+1)/2)^u / u!` terms for `k` allele classes, 35-45 µs each. Measured
-(`jennifer` 0.25.0-dev+43), one locus, Hd with `u` unknowns, θ = 0.01:
-6 alleles, `u = 2`, 0.01 s; 10 alleles, `u = 2`, 0.1 s; 6 alleles, `u = 3`,
-0.16 s; 8 alleles, `u = 3`, 0.7 s; 10 alleles, `u = 3`, 2.3 s. `locusLR`
-evaluates both hypotheses: Hp (one known plus 3 unknowns) and Hd (3 unknowns)
-at 10 alleles take 4.3 s per locus. A 24-locus three-person stain, six alleles
-per locus, Hp suspect plus 2 unknowns against Hd 3 unknowns, takes 3.7 s
-(107184 combinations). `MAX_UNKNOWNS` (3) and `MAX_LOCUS_ALLELES` (10) make
-larger loci throw; `MAX_COMBINATIONS` (250000, about 11 s) caps a
-whole-mixture call, checked up front. Score larger mixtures in groups of
-loci (`restrictMixture`) and multiply the results.
+`(k(k+1)/2)^u / u!` terms for `k` allele classes, about 28 µs each on
+`jennifer` 0.28.0. One locus, θ = 0.01, measured on `jennifer`
+0.25.0-dev+43 (35-45 µs a term):
+
+| Alleles | Hd, `u = 2` | Hd, `u = 3` |
+|---|---|---|
+| 6 | 0.01 s | 0.16 s |
+| 8 | - | 0.7 s |
+| 10 | 0.1 s | 2.3 s |
+
+`locusLR` evaluates both hypotheses: Hp (one known plus 3 unknowns) and Hd
+(3 unknowns) at 10 alleles took 4.3 s per locus there. A 24-locus
+three-person stain, six alleles per locus, Hp suspect plus 2 unknowns against
+Hd 3 unknowns, takes 3.0 s on 0.28.0 (107184 combinations). `MAX_UNKNOWNS`
+(3) and `MAX_LOCUS_ALLELES` (10) make larger loci throw; `MAX_COMBINATIONS`
+(250000, about 7 s) caps a whole-mixture call, checked up front. Score
+larger mixtures in groups of loci (`restrictMixture`) and multiply the
+results.
 
 ### The permutation HWE test is linear in sample size times permutations
 
@@ -392,8 +411,9 @@ it.
 Every `mutation.paternityIndexAt` / `duoPaternityIndexAt` builds its
 matrices over the locus's whole allele table: `O(n²)` per model interpreted,
 plus an `O(n³)` `linalg.solve` with PM. One PM model at a 120-allele locus
-takes about 0.19 s, at 200 alleles 0.47 s; a 24-locus trio with 30 alleles
-per locus and a PM paternal model 0.47 s. Nothing is cached across calls, so
+takes about 0.17 s, at 200 alleles 0.32 s; a 24-locus trio with 30 alleles
+per locus and a PM paternal model about 0.24 s (an estimate, half the
+earlier 0.47 s). Nothing is cached across calls, so
 a batch of alleged fathers rebuilds every matrix.
 `mutation.MAX_STATIONARY_ALLELES` (200) caps the detectable alleles under PM.
 

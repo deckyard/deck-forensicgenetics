@@ -603,10 +603,10 @@ export def const MAX_ALIGN_LENGTH as int init 5000;
  * The most matrix cells one banded pass of `align` may fill.
  *
  * Divergent sequences widen the band towards the full O(nm) matrix, at about
- * 1.3 us per cell on Jennifer 0.27.0. The cap admits a full-width alignment
+ * 0.9 us per cell on Jennifer 0.28.0. The cap admits a full-width alignment
  * of two 1100-base sequences (a whole control region, however divergent:
- * 3.4 million cells over its doubling passes, 4.3 s on Jennifer 0.27.0), and
- * a band of half-width 124 at `MAX_ALIGN_LENGTH`. A control
+ * 3.4 million cells over its doubling passes, about 3 s on Jennifer
+ * 0.28.0), and a band of half-width 124 at `MAX_ALIGN_LENGTH`. A control
  * region against the rCRS with a few dozen differences needs a band of 16 to
  * 32 (under 75000 cells).
  */

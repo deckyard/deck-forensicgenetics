@@ -135,7 +135,7 @@ pathological input from running for hours or exhausting memory:
 
 - Mixtures: `MAX_UNKNOWNS` (3), `MAX_LOCUS_ALLELES` (10) and
   `MAX_COMBINATIONS` (250,000 for a whole call, counted before any locus is
-  evaluated; about 11 s).
+  evaluated; about 7 s).
 - Pedigrees: `MAX_PEDIGREE_ALLELES` (20) observed alleles per locus; simple
   pedigrees only (loops are refused). Peeling is iterative, so depth needs no
   cap.
@@ -145,7 +145,7 @@ pathological input from running for hours or exhausting memory:
   full matrix.
 - X-STR: `MAX_GROUP_HETEROZYGOUS_LOCI` (12) per linkage group.
 - EMP files: `MAX_ENTRIES` (200,000) haplotypes per file, several times
-  EMPOP's whole database; reading that many takes about 100 s.
+  EMPOP's whole database; reading that many takes about 50 s and 1.4 GB.
 - Mutation: `MAX_STATIONARY_ALLELES` (200) for the stationary model.
 - Monte Carlo: `MAX_PERMUTATIONS` and `MAX_DRAWS` (1,000,000 each), checked
   as a range on the caller's parameter (module kind).
@@ -191,7 +191,7 @@ copied its whole database per call).
 
 Every call that takes an `emp.EmpFile` copies it across the module
 boundary (the M30 copy-elision work removes this): at 5000 haplotypes about
-0.06 s on `jennifer`, 1.7 s on `jennifer-tiny`.
+10 ms on `jennifer`, 1.7 s on `jennifer-tiny`.
 
 Two decks depend on this one by tag: `@deckyard/strider` (`FrequencyDb`
 construction, `MAX_FREQUENCY_SUM`, the core error kind) and `@deckyard/mitoleaf`
