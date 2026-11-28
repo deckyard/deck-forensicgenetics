@@ -18,7 +18,7 @@
  * locus with `n == 0` has no floor.
  *
  * The module reads no published format. Build a `FrequencyDb` with `db` and
- * `withLocus`, or convert one with a reader deck (`@deckyard/strider` for
+ * `withLocus`, or convert one with a reader deck (`@skiffyard/strider` for
  * STRidER XML). For a donor whose population is uncertain use
  * `randomMatchProbabilityAcross`, not a table pooled with `combineFrequencies`,
  * which mis-scores every locus the populations differ at.
@@ -32,7 +32,7 @@
  * @module forensicgenetics
  * @see https://strider.online/formulae - the STRidER formulae page these
  *   estimators follow
- * @see https://github.com/deckyard/deck-strider-frequency-converter - the reader
+ * @see https://github.com/skiffyard/deck-strider-frequency-converter - the reader
  *   deck that converts a STRidER export into a `FrequencyDb`
  * @example
  * import "@deckyard/forensicgenetics/" as forensics;

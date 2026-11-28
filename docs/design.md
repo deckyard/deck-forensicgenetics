@@ -25,7 +25,7 @@ The one file format it knows, EMP, it takes and returns as text.
 Out of scope:
 
 - **Reading published tables and run files.** Reader decks build the deck's
-  values: `@deckyard/strider` turns STRidER frequency files into a
+  values: `@skiffyard/strider` turns STRidER frequency files into a
   `FrequencyDb`. The core never imports a reader deck. EMP is the exception
   (`emp.j`): a line of it is a `lineage.MtHaplotype` in the notation
   `lineage` already parses, so a separate deck would hold little but a call
@@ -120,7 +120,7 @@ Every module throws `Error{kind: <module>}` through its own `fail`: kinds
 `"mutation"`. A module calling another rethrows that module's error unchanged
 unless documented otherwise (the X-STR daughter indices rethrow
 `"kinship"` as `"xstr"`; `emp` rethrows `"lineage"` as `"emp"` with the line
-number in front). `@deckyard/strider` relies on the core kind
+number in front). `@skiffyard/strider` relies on the core kind
 `"forensicgenetics"` for `withLocus`.
 
 The caps below throw the generic `Error{kind: "limit"}` (since 0.5.0; they
@@ -193,7 +193,7 @@ Every call that takes an `emp.EmpFile` copies it across the module
 boundary (the M30 copy-elision work removes this): at 5000 haplotypes about
 10 ms on `jennifer`, 1.7 s on `jennifer-tiny`.
 
-Two decks depend on this one by tag: `@deckyard/strider` (`FrequencyDb`
-construction, `MAX_FREQUENCY_SUM`, the core error kind) and `@deckyard/mitoleaf`
+Two decks depend on this one by tag: `@skiffyard/strider` (`FrequencyDb`
+construction, `MAX_FREQUENCY_SUM`, the core error kind) and `@skiffyard/mitoleaf`
 (`lineage`'s difference notation and distance). Their behaviour changes only
 after a release here.

@@ -47,7 +47,7 @@ This deck is part of [Deckyard](https://github.com/deckyard), community decks fo
 Every module except `lineage` and `emp` imports the core (`search`, `xstr` and
 `mutation` also `kinship`); `lineage` imports nothing from the
 deck, `emp` only `lineage`. The core reads no published frequency format: a reader deck such as
-[`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
+[`@skiffyard/strider`](https://github.com/skiffyard/deck-strider-frequency-converter)
 (STRidER XML) converts one into a `FrequencyDb`.
 
 ```jennifer

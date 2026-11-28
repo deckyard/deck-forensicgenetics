@@ -53,10 +53,10 @@ The core reads no file format. A reader deck imports the core and produces a
 
 | Deck | Converts |
 | --- | --- |
-| [`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter) | STRidER-style XML |
+| [`@skiffyard/strider`](https://github.com/skiffyard/deck-strider-frequency-converter) | STRidER-style XML |
 
 ```jennifer
-import "@deckyard/strider/" as strider;
+import "@skiffyard/strider/" as strider;
 
 def db as forensicgenetics.FrequencyDb init strider.load($xml, "STRidER AT");
 ```

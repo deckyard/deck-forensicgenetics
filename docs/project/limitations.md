@@ -61,7 +61,7 @@ third at one homozygous locus, and the gap compounds across a profile. See
 ### Reading a published table is a separate deck
 
 The core reads no file format; `emp` reads EMPOP's EMP files.
-[`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
+[`@skiffyard/strider`](https://github.com/skiffyard/deck-strider-frequency-converter)
 converts STRidER-style XML and has its own limitations, chief among them that
 it has not been validated against a real STRidER export.
 

@@ -6,8 +6,8 @@
 # population data. Every number here is made up.
 #
 # The deck reads no published format: a reader deck converts one into a
-# FrequencyDb - @deckyard/strider does that for STRidER XML, at
-# https://github.com/deckyard/deck-strider-frequency-converter. The examples build one
+# FrequencyDb - @skiffyard/strider does that for STRidER XML, at
+# https://github.com/skiffyard/deck-strider-frequency-converter. The examples build one
 # in code instead, so they depend on nothing but the deck itself. For anything
 # you intend to rely on, get a real table from https://strider.online/.
 

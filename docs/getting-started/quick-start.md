@@ -20,7 +20,7 @@ def db as forensicgenetics.FrequencyDb init forensicgenetics.withLocus(
 `1000` is N, the number of individuals typed at the locus. It sets the
 `5/(2N)` floor for rare and unlisted alleles. A reader deck converts a
 published table instead, for example
-[`@deckyard/strider`](https://github.com/deckyard/deck-strider-frequency-converter)
+[`@skiffyard/strider`](https://github.com/skiffyard/deck-strider-frequency-converter)
 for STRidER XML. See [Reference frequency data](../concepts/frequency-data.md).
 
 ## 2. A match probability
