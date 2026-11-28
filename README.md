@@ -19,6 +19,8 @@ input is an mtDNA region aligned to the rCRS to name its differences.
 Requires Jennifer 0.28.0 or newer; no deck dependencies, and it runs on
 `jennifer-tiny`.
 
+This deck is part of [Deckyard](https://github.com/deckyard), community decks for [Jennifer](https://jennifer-lang.dev/).
+
 ## Install
 
 `jvc add @deckyard/forensicgenetics` and `jvc install`, or copy the deck's
